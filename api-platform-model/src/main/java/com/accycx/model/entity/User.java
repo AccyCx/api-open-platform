@@ -45,7 +45,7 @@ public class User implements Serializable { //序列化，方便存入Redis和�
 
 //    逻辑删除标志：0-未删除，1-已删除
     @TableLogic // 调用deleteById()，框架会自动变成 update is_delete = 1，而不是真删数据
-    private Integer isDeleted;
+    private Integer isDelete;
 
     @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射
     private static final long serialVersionUID = 1L; //序列化版本号

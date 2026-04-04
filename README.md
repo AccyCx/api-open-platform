@@ -227,3 +227,322 @@ CREATE TABLE `user_interface_invoke` (
 
 
 
+# 项目开发阶段化
+
+我将项目开发划分成了下面四个阶段，从基础准备到核心业务开发再到技术难点攻关
+
+## 阶段一：基础与权限（当前阶段）
+
+1. **统一返回类与异常处理**：填充common模块。
+2. **数据模型映射**：在 `model` 模块里，根据 SQL 写出 `User`、`InterfaceInfo` 等实体类。
+3. **用户模块 (User Service)**：
+   - 实现**手机号注册/登录**（配合 Redis 存验证码）。
+   - 引入 **JWT (Token)** 鉴权。
+   - 实现 **AK/SK** 的自动生成（注册时分配）。
+
+## 阶段二：接口管理（核心业务）
+
+1. **接口发布与管理**：实现管理员对 API 接口的增删改查（CRUD）。
+2. **接口详情页展示**：让开发者能在前端看到有哪些 API 可以调。
+
+## 阶段三：签名认证与 SDK（技术难点）
+
+1. **API 签名算法实现**：编写核心的校验逻辑。
+2. **开发 SDK**：写一个可以让别人直接 `import` 的 jar 包，自动处理签名。
+
+## 阶段四：网关与中间件（高并发攻坚）
+
+1. **Gateway 搭建**：实现统一鉴权和路由转发。
+2. **Redis 限流**：防止接口被刷。
+3. **MQ + ES 日志系统**：异步收集调用记录并实现报表搜索。
+
+
+
+# 统一返回类与异常处理
+
+在一个标准的项目里，后端不能直接把一堆原始数据或者英文报错丢给前端。我们需要一个**统一的包装盒**，不管结果是成功还是失败，都长这样： `{ "code": 0, "data": { ... }, "message": "ok" }`
+
+## 错误码枚举(`ErrorCode.java`)
+
+```java
+/**
+ * 错误码枚举
+ */
+public enum ErrorCode {
+
+    SUCCESS(0, "ok"),
+    PARAMS_ERROR(40000, "请求参数错误"),
+    NOT_LOGIN_ERROR(40100, "未登录"),
+    NO_AUTH_ERROR(40101, "无权限"),
+    NOT_FOUND_ERROR(40400, "请求数据不存在"),
+    FORBIDDEN_ERROR(40301, "禁止操作"),
+    SYSTEM_ERROR(50000, "系统内部异常"),
+    OPERATION_ERROR(50001, "操作失败");
+
+    private final int code;
+    private final String message;
+
+    ErrorCode(int code, String message) {
+        this.code = code;
+        this.message = message;
+    }
+
+    public int getCode() { return code; }
+    public String getMessage() { return message; }
+}
+```
+
+在这里采用的是业务状态码而不是HTTP状态码，因为标准的 HTTP 状态码只有几十个，不够描述复杂的业务场景。
+
+- **404** 只告诉前端“资源找不到了”。
+- **40400** 可能代表“找不到该用户”，**40401** 可能代表“找不到该订单”。 通过扩充位数（通常是 5 位），可以对错误进行**分类管理**。
+
+另外，无论后端发生什么错误，通常都会给前端返回200OK的HTTP状态，然后在返回的JSON体中告知具体的业务代码：
+
+```json
+{
+  "code": 40400,
+  "message": "请求资源不存在",
+  "data": null
+}
+```
+
+这样做的好处是：前端的AJAX拦截器可以统一处理业务逻辑，而不会因为HTTP状态码不是200就直接崩溃或弹窗
+
+## 通用对象返回(`BaseResponse.java`)
+
+这就是那个“包装盒”，用泛型 `<T>` 确保它可以装下任何类型的返回数据。
+
+```java
+/**
+ * 通用返回类
+ * @param <T>
+ */
+@Data
+public class BaseResponse<T> implements Serializable {
+
+    private int code;
+    private T data;
+    private String message;
+
+    public BaseResponse(int code, T data, String message) {
+        this.code = code;
+        this.data = data;
+        this.message = message;
+    }
+
+    public BaseResponse(int code, T data) {
+        this(code, data, "");
+    }
+
+    public BaseResponse(ErrorCode errorCode) {
+        this(errorCode.getCode(), null, errorCode.getMessage());
+    }
+}
+```
+
+### 泛型的好处
+
+**1.代码复用**：一套 `BaseResponse` 逻辑走天下，不用重复造轮子。
+
+**2.类型安全**：编译器会帮你检查类型。如果你声明了 `BaseResponse<String>`，却试图往里面放个 `Integer`，代码在编译阶段就会报错，而不是等到程序运行（Runtime）时才崩溃。
+
+**3.语义清晰**：看到 `BaseResponse<User>`，任何人一眼就能看出这个响应体里装的是用户信息。
+
+### 常见的占位符字母
+
+虽然你可以用任何字母（甚至是 `BaseResponse<ABC>`），但按照 Java 的惯例，通常使用以下单大写字母：
+
+| **字母** | **含义**    | **常见用途**                     |
+| -------- | ----------- | -------------------------------- |
+| **T**    | **Type**    | 表示任意类型（最常用）           |
+| **E**    | **Element** | 表示集合中的元素（如 `List<E>`） |
+| **K**    | **Key**     | 表示键（如 `Map<K, V>` 中的键）  |
+| **V**    | **Value**   | 表示值（如 `Map<K, V>` 中的值）  |
+| **R**    | **Return**  | 表示方法的返回值类型             |
+
+## 返回工具类（`ResultUtils.java`）
+
+可以简化在Controller里的代码量，直接`ResultUtils.success(data)`就能返回标准格式，不需要每次都new
+
+```java
+/**
+ * 返回工具类
+ */
+public class ResultUtils {
+
+//    成功
+    public static <T> BaseResponse<T> success(T data) {
+        return new BaseResponse<>(0, data, "ok");
+    }
+
+//    失败
+    public static BaseResponse error(ErrorCode errorCode){
+        return new BaseResponse<>(errorCode);
+    }
+
+//    失败（自定义状态码和信息）
+    public static BaseResponse error(int code,String message){
+        return new BaseResponse<>(code,null,message);
+    }
+
+//    失败（综合枚举和自定义信息）
+    public static BaseResponse error(ErrorCode errorCode,String message){
+        return new BaseResponse<>(errorCode.getCode(),null,message);
+    }
+
+}
+
+```
+
+# 数据模型映射
+
+主要使用了
+
+1. **`Lombok (@Data)`**：自动生成 Get/Set 方法。
+2. **`MyBatis-Plus` 注解**：告诉框架这个类对应哪张表、哪个是主键、哪个是逻辑删除字段。
+
+## 用户实体类 (`User.java`)
+
+这个类主要存储开发者的基本信息以及最重要的 API 签名密钥（AK/SK）。
+
+```java
+/**
+ * 用户表
+ */
+@Data
+@TableName(value = "user") //指定映射的数据库表名
+public class User implements Serializable { //序列化，方便存入Redis和分布式调用
+
+//    主键ID
+    @TableId(type = IdType.AUTO) //指定主键生成策略为自增
+    private Long id;
+
+//    登录账号
+    private String userAccount;
+
+//    登录密码（加密存储）
+    private String userPassword;
+
+//    绑定的手机号
+    private String phone;
+
+//    API调用公钥（AK）
+    private String accessKey;
+
+//    API调用私钥（SK）
+    private String secretKey;
+
+//    用户角色：user-普通开发者，admin-管理员
+    private String userRole;
+
+//    创建时间
+    private Date createTime;
+
+//    更新时间
+    private Date updateTime;
+
+//    逻辑删除标志：0-未删除，1-已删除
+    @TableLogic // 调用deleteById()，框架会自动变成 update is_delete = 1，而不是真删数据
+    private Integer isDeleted;
+
+    @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射
+    private static final long serialVersionUID = 1L; //序列化版本号
+
+}
+```
+
+## 接口信息实体类 (`InterfaceInfo.java`)
+
+API 开放平台里的“商品货架”，记录了每个接口的详细属性。
+
+```java
+@Data
+@TableName(value = "interface_info") //指定映射的数据库表名
+public class InterfaceInfo implements Serializable {
+
+//    主键ID
+    @TableId(type = IdType.AUTO) //指定主键生成策略为自增
+    private Long id;
+
+//    接口名称
+    private String name;
+
+//    接口描述
+    private String description;
+
+//    接口调用真实地址
+    private String url;
+
+//    请求方法：GET、POST、PUT、DELETE等
+    private String method;
+
+//    请求参数说明(JSON格式)
+    private String requestParams;
+
+//    请求头说明
+    private String requestHeader;
+
+//    响应头说明
+    private String responseHeader;
+
+//    接口状态：0-关闭，1-开启
+    private Integer status;
+
+//    创建此接口的管理员ID
+    private Long userId;
+
+//    创建时间
+    private Long createTime;
+
+//    更新时间
+    private Long updateTime;
+
+//    逻辑删除标志：0-未删除，1-已删除
+    @TableLogic
+    private Integer isDeleted;
+
+    @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射
+    private static final long serialVersionUID = 1L; //序列化版本号
+}
+```
+
+## 用户调用接口关系表 (`UserInterfaceInvoke.java`)
+
+高并发抢占资源的核心表,用来记录每个开发者对某个接口还能调用多少次（配额）
+
+```java
+@Data
+@TableName(value = "user_interface_invoke") //指定映射的数据库表名
+public class UserInterfaceInvoke implements Serializable {
+
+    @TableId(type= IdType.AUTO)
+    private Long id;
+
+//    调用者的用户ID
+    private Long userId;
+
+//    被调用的接口ID
+    private Long interfaceInfoId;
+
+//    历史总调用次数
+    private Integer totalNum;
+
+//    剩余可调用次数
+    private Integer leftNum;
+
+//    调用状态（0-正常，1-禁用此用户调用）
+    private Integer status;
+
+    private Date createTime;
+
+    private Date updateTime;
+
+    @TableLogic
+    private Integer isDeleted;
+
+    @TableField(exist = false)
+    private static final long serialVersionUID = 1L; //序列化版本号
+}
+
+```
