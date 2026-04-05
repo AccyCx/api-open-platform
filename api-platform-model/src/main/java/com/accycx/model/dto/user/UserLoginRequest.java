@@ -3,6 +3,7 @@ package com.accycx.model.dto.user;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 @Data
@@ -14,4 +15,7 @@ public class UserLoginRequest implements Serializable {
 
     @Schema(description = "用户密码")
     private String userPassword;
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 }

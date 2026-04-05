@@ -4,6 +4,7 @@ package com.accycx.model.entity;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.io.StringReader;
 import java.util.Date;
@@ -47,6 +48,7 @@ public class User implements Serializable { //序列化，方便存入Redis和�
     @TableLogic // 调用deleteById()，框架会自动变成 update is_delete = 1，而不是真删数据
     private Integer isDelete;
 
+    @Serial
     @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射
     private static final long serialVersionUID = 1L; //序列化版本号
 

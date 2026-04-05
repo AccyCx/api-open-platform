@@ -4,6 +4,7 @@ package com.accycx.model.entity;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 @Data
@@ -51,6 +52,7 @@ public class InterfaceInfo implements Serializable {
     @TableLogic
     private Integer isDeleted;
 
+    @Serial
     @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射
     private static final long serialVersionUID = 1L; //序列化版本号
 }

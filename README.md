@@ -546,3 +546,420 @@ public class UserInterfaceInvoke implements Serializable {
 }
 
 ```
+
+# 用户模块
+
+## 注册模块
+
+### 密码加密工具类 (`PasswordUtils.java`)
+
+这里采用最经典的 **MD5 + 固态盐值（Salt）** 方案。Spring 框架自带了非常好用的 `DigestUtils`，我们直接拿来用。
+
+```java
+/**
+ * 密码加密工具类
+ */
+public class PasswordUtils {
+
+//    盐值（Salt），用于混淆密码
+//    随便写一段复杂的字符串，不能泄漏给外部
+    private static final String SALT = "api_platform_AccyCx_2026";
+
+    /**
+     * MD5 加密带盐密码
+     * @param userPassword 用户在前端输入的明文密码
+     * @return 加密后的32位密文
+     */
+    public static String encryptPassword(String userPassword){
+//        将明文密码和盐值拼接在一起，增加复杂度
+        String saltedPassword = SALT + userPassword;
+//        使用spring自带的工具类转化为MD5十六进制字符串
+        return DigestUtils.md5DigestAsHex(saltedPassword.getBytes());
+    }
+
+}
+```
+
+为什么要“加盐（Salt）”？
+
+单纯的 MD5 加密并不安全，因为黑客手里有‘彩虹表’（记录了常见密码 `123456` 对应的 MD5 值）。为了防破解，应该在明文密码上拼接了一段只有后端代码才知道的‘盐值（Salt）’。这样一来，即使用户的密码再简单，经过加盐混淆后，算出来的 MD5 值也是完全陌生且无法通过彩虹表反查的。
+
+(注：在更高级的安全场景中，还会使用 `BCrypt` 这种每次生成密文都不一样的动态加盐算法，目前我们用 MD5+静态盐已经足够支撑这个项目的注册登录逻辑了。)
+
+### 密钥生成工具类 (`KeyUtils.java`)
+
+这里我们使用 Java 自带的 `UUID`（通用唯一识别码）来生成基础的随机串。为了让 SK 更加安全和复杂，我们甚至可以复用刚才写的 `PasswordUtils` 对它进行一次哈希混淆。
+
+```java
+/**
+ * API密钥生成工具类
+ */
+public class KeyUtils {
+
+    /**
+     * 生成AccessKey
+     * 特点：必须全局唯一，使用去掉横岗的UUID
+     *
+     * @return 32位随机字符串
+     */
+    public static String generateAccessKey(){
+        return UUID.randomUUID().toString().replace("-","");
+    }
+
+    /**
+     * 生成SecretKey
+     * 特点：必须全局唯一，还要足够复杂防破解
+     * 方案：生成一个UUID，然后套一层MD5加密，增加复杂度
+     *
+     * @return 32位复杂哈希字符串
+     */
+    public static String generateSecretKey(){
+//        先生成一个基础的随机UUID
+        String rawKey = UUID.randomUUID().toString().replace("-","");
+//        复用PasswordUtils 进行加盐MD5混淆
+        return PasswordUtils.encryptPassword(rawKey);
+    }
+
+}
+
+```
+
+###  建立数据通道：`UserMapper.java`
+
+在 `mapper` 包下新建这个接口。它继承了 `MyBatis-Plus` 的 `BaseMapper`，连一行 SQL 都不用写，就已经拥有了对 `user` 表的增删改查能力。
+
+```java
+
+/**
+ * 用户表 Mapper接口
+ */
+@Mapper
+public interface UserMapper extends BaseMapper<User> {
+
+}
+```
+
+### 定义业务规范：`UserService.java`
+
+在 `service` 包下新建这个接口。同样继承 `MyBatis-Plus` 的 `IService`。我们在这里定义一个专门用于注册的方法。(之前提到有手机号注册，`redis`存验证码的方案，后续会添加)
+
+```java
+/**
+ * 用户服务接口
+ */
+public interface UserService extends IService<User> {
+
+    /**
+     * 用户注册
+     *
+     * @param userAccount   用户账号
+     * @param userPassword  用户密码
+     * @param checkPassword 校验密码
+     * @return 新用户 id
+     */
+    long userRegister(String userAccount, String userPassword, String checkPassword);
+}
+```
+
+### 核心逻辑落地：`UserServiceImpl.java`
+
+这里详细定义注册方法的功能：
+
+```java
+/**
+ * 用户服务实现类
+ */
+@Service
+public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
+
+    @Autowired
+    private UserMapper userMapper;
+
+    @Override
+    public long userRegister(String userAccount,String userPassword,String checkPassword){
+
+//        1.校验参数是否为空
+        if(StringUtils.isAnyBlank(userAccount,userPassword,checkPassword)){
+            throw new RuntimeException("参数不能为空");
+        }
+
+//        2.账号长度不能小于4位，密码不能小于8位
+        if(userAccount.length()<4 || userPassword.length()<8){
+            throw new RuntimeException("账号过短或密码过短");
+        }
+
+//        3.校验两次输入的密码是否一致
+        if(!userPassword.equals(checkPassword)){
+            throw new RuntimeException("两次输入的密码不一致");
+        }
+
+//        4.检查账号是否重复（数据库里查）
+//        注意:高并发场景下这里其实是不够的，必须配合数据库 user_account 字段的唯一索引来防重
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("user_account",userAccount);
+        long count = userMapper.selectCount(queryWrapper);
+        if(count>0){
+            throw new RuntimeException("账号重复");
+        }
+
+//        5.密码加密
+        String encryptPassword = PasswordUtils.encryptPassword(userPassword);
+
+//        6.颁发API调用的AK/SK
+        String accessKey = KeyUtils.generateAccessKey();
+        String secretKey = KeyUtils.generateSecretKey();
+
+//        7.将数据插入数据库
+        User user = new User();
+        user.setUserAccount(userAccount);
+        user.setUserPassword(encryptPassword);
+        user.setAccessKey(accessKey);
+        user.setSecretKey(secretKey);
+
+//        MyBatis-Plus 的 save 方法会自动填充 createTime 和 updateTime 字段
+        boolean saveResult = this.save(user);
+        if(!saveResult){
+            throw new RuntimeException("注册失败，数据库错误");
+        }
+
+        return user.getId();
+    }
+}
+```
+
+第 4 步检查账号重复，如果在极高的并发下，两个请求同时来到这里，发现账号都不存在，然后同时执行插入，不就产生重复账号了吗？
+
+没错！代码层面的查重在多线程下会失效。所以我们在之前设计数据库表时，已经在 `user_account` 字段上加了 **`UNIQUE KEY`（唯一索引）**。即使代码层没拦住，数据库底层也会抛出 `DuplicateKeyException`，确保数据绝对一致。
+
+### 创建注册请求DTO
+
+```java
+/**
+ * 用户注册请求体
+ */
+@Data
+@Schema(description = "用户注册请求体")
+public class UserRegisterRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+//    账号
+    @Schema(description = "用户账号")
+    private String userAccount;
+
+//    密码
+    @Schema(description = "用户密码")
+    private String userPassword;
+
+//    确认密码
+    @Schema(description = "确认密码")
+    private String checkPassword;
+}
+```
+
+### 编写 UserControlle的用户注册接口
+
+```java
+**
+ * 用户接口
+ */
+@RestController  //标注这是一个 RESTful 控制器，返回 JSON 数据
+@RequestMapping("/user") //接口基础路径
+@Tag(name = "用户接口", description = "用户的注册、登录与管理")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    /**
+     * 用户注册接口
+     *
+     * @param userRegisterRequest 封装了前端传来的账号、密码、确认密码
+     * @return 统一返回格式，包含新注册用户的ID
+     */
+    @PostMapping("/register")
+    @Operation(summary = "用户注册")
+    public BaseResponse<Long> userRegister(@RequestBody UserRegisterRequest userRegisterRequest){
+//        1.校验请求体是否为空
+        if(userRegisterRequest == null){
+//            使用封装的统一错误码返回
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"请求参数为空");
+        }
+
+//        2.提取参数
+        String userAccount = userRegisterRequest.getUserAccount();
+        String userPassword = userRegisterRequest.getUserPassword();
+        String checkPassword = userRegisterRequest.getCheckPassword();
+
+//        3.Controller层做一层基础的非空校验（Service层做深度业务校验）
+        if (StringUtils.isAnyBlank(userAccount, userPassword, checkPassword)) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "账号、密码或确认密码不能为空");
+        }
+
+//        4.调用Service层执行真正的注册落库逻辑
+        long result = userService.userRegister(userAccount, userPassword, checkPassword);
+
+//        5.将结果包装成标准格式返回给前端
+        return ResultUtils.success(result);
+    }
+
+}
+```
+
+到现在：一条完整的“注册”业务线已经彻底打通！前端发起 HTTP POST 请求 -> `UserController` 接收并校验 -> `UserService` 加密并分配 AK/SK -> `UserMapper` 插入数据库。成功通过接口测试后就可以进行下一步了！
+
+## 登录模块
+
+### 创建JWT工具类
+
+在 `common` 模块的 `utils` 包下创建 `JwtUtils.java`。这个工具负责根据用户的 ID 和账号，生成一段加密的字符串（Token）。
+
+在写这个工具类前，记得在pom文件里面添加JWT相关的依赖
+
+```java
+public class JwtUtils {
+    // Token过期时间，这里设置为7天
+    private static final long EXPIRE_TIME = 7 * 24 * 60 * 60 * 1000L;
+
+    // JWT 签名密钥（必须满足新版 HS512 的安全长度要求）
+    private static final String SECRET_KEY = "api_platform_jwt_secret_key_accycx_must_be_very_long_for_security_reasons_123456";
+
+    // 将字符串秘钥转换成安全规范的Key对象
+    private static final Key KEY = Keys.hmacShaKeyFor(SECRET_KEY.getBytes(StandardCharsets.UTF_8));
+
+    public static String generateToken(Long userId, String userAccount){
+        Map<String,Object> claims = new HashMap<>();
+        claims.put("userId", userId);
+        claims.put("userAccount", userAccount);
+
+        return Jwts.builder()
+                .setClaims(claims)
+                .setExpiration(new Date(System.currentTimeMillis() + EXPIRE_TIME))
+                .signWith(KEY, SignatureAlgorithm.HS512)
+                .compact();
+    }
+}
+```
+
+### 创建登录 DTO 和登录返回的 VO
+
+```java
+@Data
+@Schema(description = "用户登录请求体")
+public class UserLoginRequest implements Serializable {
+
+    @Schema(description = "用户账号")
+    private String userAccount;
+
+    @Schema(description = "用户密码")
+    private String userPassword;
+}
+
+```
+
+登录成功后，前端不仅需要 Token，还需要展示用户的账号和角色。我们绝对不能把包含 AK/SK 的原声 `User` 类直接扔给前端，所以要用一个脱敏的 VO 包装一下。
+
+```java
+@Data
+@Schema(description = "登录用户返回体")
+public class LoginUserVO implements Serializable {
+
+    @Schema(description = "用户ID")
+    private Long id;
+
+    @Schema(description = "用户账号")
+    private String userAccount;
+
+    @Schema(description = "用户角色")
+    private String userRole;
+
+    @Schema(description = "令牌")
+    private String token;//颁发给前端的令牌
+}
+
+```
+
+### 在Service中实现登录逻辑
+
+在`UserService.java`中添加方法定义：
+
+```java
+LoginUserVO userLogin(String userAccount, String userPassword);
+```
+
+在`UserServiceImpl.java`中实现：
+
+```java
+//    用户登录逻辑
+    @Override
+    public LoginUserVO userLogin(String userAccount, String userPassword){
+//        1.校验费控
+        if(StringUtils.isAnyBlank(userAccount,userPassword)){
+            throw new RuntimeException("账号和密码不能为空");
+        }
+
+//        2.密码加密(将前端传来的明文密码进行加密，再去和数据库里的比对)
+        String encryptPassword = PasswordUtils.encryptPassword(userPassword);
+
+//        3.查询数据库是否存在该用户
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("user_account",userAccount);
+        queryWrapper.eq("user_password",encryptPassword);
+        User user = userMapper.selectOne(queryWrapper);
+        if(user == null){
+            throw new RuntimeException("账号或密码错误");
+        }
+
+//        4.账号密码正确，生成JWT Token
+        String token = JwtUtils.generateToken(user.getId(),user.getUserAccount());
+
+//        5.封装返回脱敏数据（VO）
+        LoginUserVO loginUserVO = new LoginUserVO();
+        loginUserVO.setId(user.getId());
+        loginUserVO.setUserAccount(user.getUserAccount());
+        loginUserVO.setUserRole(user.getUserRole());
+        loginUserVO.setToken(token);
+
+        return loginUserVO;
+
+    }
+```
+
+### 在Controller写登录接口
+
+在`UserController.java`中实现：
+
+```java
+    /**
+     * 用户登录接口
+     *
+     * @param userLoginRequest 封装了前端传来的账号和密码
+     * return 统一返回格式，包含登录用户的基本信息和令牌
+     */
+    @PostMapping("/login")
+    @Operation(summary = "用户登录")
+    public BaseResponse<LoginUserVO> userLogin(@RequestBody UserLoginRequest userLoginRequest){
+
+//        1.校验请求体是否为空
+        if(userLoginRequest == null){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"请求参数为空");
+        }
+
+//        2.提取参数
+        String userAccount = userLoginRequest.getUserAccount();
+        String userPassword = userLoginRequest.getUserPassword();
+
+//        3.Controller层做一层基础的非空校验（Service层做深度业务校验）
+        if (StringUtils.isAnyBlank(userAccount, userPassword)) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "账号或密码不能为空");
+        }
+
+//       获取包含Token的完整登录信息
+        LoginUserVO loginUserVO = userService.userLogin(userAccount, userPassword);
+
+        return ResultUtils.success(loginUserVO);
+    }
+```
+
+
+
+到这里该项目的一阶段已完成，下篇文章会进入到阶段二：接口管理（核心业务）

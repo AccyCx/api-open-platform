@@ -3,6 +3,7 @@ package com.accycx.model.entity;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.util.Date;
 
@@ -35,6 +36,7 @@ public class UserInterfaceInvoke implements Serializable {
     @TableLogic
     private Integer isDeleted;
 
+    @Serial
     @TableField(exist = false)
     private static final long serialVersionUID = 1L; //序列化版本号
 }

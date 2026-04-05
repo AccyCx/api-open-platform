@@ -24,6 +24,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Autowired
     private UserMapper userMapper;
 
+//    用户注册逻辑
     @Override
     public long userRegister(String userAccount,String userPassword,String checkPassword){
 
@@ -74,6 +75,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return user.getId();
     }
 
+//    用户登录逻辑
     @Override
     public LoginUserVO userLogin(String userAccount, String userPassword){
 //        1.校验费控

@@ -4,6 +4,7 @@ package com.accycx.model.dto.user;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 /**
@@ -12,6 +13,8 @@ import java.io.Serializable;
 @Data
 @Schema(description = "用户注册请求体")
 public class UserRegisterRequest implements Serializable {
+
+    @Serial
     private static final long serialVersionUID = 1L;
 
 //    账号
