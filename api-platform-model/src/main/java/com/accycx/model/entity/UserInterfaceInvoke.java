@@ -34,7 +34,7 @@ public class UserInterfaceInvoke implements Serializable {
     private Date updateTime;
 
     @TableLogic
-    private Integer isDeleted;
+    private Integer isDelete;
 
     @Serial
     @TableField(exist = false)

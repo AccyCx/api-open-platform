@@ -6,6 +6,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.Date;
 
 @Data
 @TableName(value = "interface_info") //指定映射的数据库表名
@@ -43,14 +44,14 @@ public class InterfaceInfo implements Serializable {
     private Long userId;
 
 //    创建时间
-    private Long createTime;
+    private Date createTime;
 
 //    更新时间
-    private Long updateTime;
+    private Date updateTime;
 
 //    逻辑删除标志：0-未删除，1-已删除
     @TableLogic
-    private Integer isDeleted;
+    private Integer isDelete;
 
     @Serial
     @TableField(exist = false) //这个字段在数据库表里不存在，不参与ORM映射

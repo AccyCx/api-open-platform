@@ -39,11 +39,5 @@ public class InterfaceInfoServiceImpl extends ServiceImpl<InterfaceInfoMapper, I
             throw new RuntimeException("接口名称过长");
         }
 
-
-
-
-
-
     }
-
 }

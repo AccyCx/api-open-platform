@@ -26,7 +26,7 @@ public class InterfaceInfoController {
     @Autowired
     private InterfaceInfoService interfaceInfoService;
 
-    // TODO: 实际企业开发中，这里还需要引入 UserService 获取当前登录用户的 ID，目前我们先写死或跳过。
+    // TODO: 这里还需要引入 UserService 获取当前登录用户的 ID，目前我们先写死或跳过.等后面完善网关拦截再补充
 
     /**
      * 创建接口
@@ -102,11 +102,6 @@ public class InterfaceInfoController {
         InterfaceInfo interfaceInfo = interfaceInfoService.getById(id);
         return ResultUtils.success(interfaceInfo);
     }
-
-
-
-
-
 }
 
 
