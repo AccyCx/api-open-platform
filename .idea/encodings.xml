@@ -2,9 +2,13 @@
 <project version="4">
   <component name="Encoding">
     <file url="file://$PROJECT_DIR$/api-platform-backend/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/api-platform-backend/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/api-platform-client-sdk/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/api-platform-client-sdk/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/api-platform-common/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/api-platform-common/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/api-platform-interface/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/api-platform-interface/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/api-platform-model/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/api-platform-model/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/src/main/java" charset="UTF-8" />
