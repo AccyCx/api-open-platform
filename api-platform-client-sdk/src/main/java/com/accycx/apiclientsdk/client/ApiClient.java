@@ -1,13 +1,12 @@
-package com.accycx.apiplatforminterface.client;
-
+package com.accycx.apiclientsdk.client;
 
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.http.HttpRequest;
 import cn.hutool.http.HttpResponse;
 import cn.hutool.http.HttpUtil;
 import cn.hutool.json.JSONUtil;
-import com.accycx.apiplatforminterface.model.User;
-import com.accycx.common.utils.SignUtils;
+import com.accycx.apiclientsdk.utils.SignUtils;
+import com.accycx.apiclientsdk.model.User;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -20,7 +19,7 @@ public class ApiClient {
     private final String accessKey;
     private final String secretKey;
 
-//    构造方法，强制要求调用者传入AK和SK
+    //    构造方法，强制要求调用者传入AK和SK
     public ApiClient(String accessKey,String secretKey){
         this.accessKey = accessKey;
         this.secretKey = secretKey;
@@ -49,7 +48,7 @@ public class ApiClient {
         return hashMap;
     }
 
-//    1.调用GET接口
+    //    1.调用GET接口
     public String getNameByGet(String name){
 //        Hutool的HttpUtil可以简化HTTP请求的发送
         HashMap<String,Object> paramMap = new HashMap<>();
@@ -59,7 +58,7 @@ public class ApiClient {
         return result;
     }
 
-//    2.调用POST URL传参接口
+    //    2.调用POST URL传参接口
     public String getNameByPost(String name){
         HashMap<String,Object> paramMap = new HashMap<>();
         paramMap.put("name",name);
@@ -68,7 +67,7 @@ public class ApiClient {
         return result;
     }
 
-//    3.调用POST JSON接口（携带签名）
+    //    3.调用POST JSON接口（携带签名）
     public String getUserNameByPost(User user){
 //        将User对象转为JSON字符串
         String json = JSONUtil.toJsonStr(user);
