@@ -1332,3 +1332,496 @@ public class NameController {
 测试成功之后就说明已经顺利跑通了，但是现在这种模拟服务有一个致命漏洞，那就是：我现在只要知道这个 `http://localhost:8102/name/user` 的地址，任何人、任何黑客都可以无限次地通过 Postman 来调用它！根本不需要经过我主平台的同意，也根本没办法扣除调用次数，所以接下来第三阶段会做：API 签名认证（AK/SK 防护）。
 
 调用者每次发请求，都必须在请求头（Header）里带上根据他的 `SecretKey` 算出来的一串复杂“签名”。接口这边验证签名通过了，才允许执行并返回结果。
+
+
+
+# 签名认证
+
+为什么要做签名认证？
+
+如果你直接把接口暴露出去，黑客可以通过抓包拿到请求地址，然后用脚本疯狂刷你的接口，导致你的服务器瘫痪，甚至把你的数据库拖垮
+
+**防守策略（AK/SK 机制）：**
+
+1. **AK (AccessKey)**：是公开的，代表“你是谁”。每次请求都要带在请求头（Header）里。
+2. **SK (SecretKey)**：是绝密的，代表“你的密码”。**绝对不能放在请求头里在网络上传输！**
+3. **Sign (签名)**：客户端在发请求前，把请求参数和绝密的 `SK` 拼接在一起，用 MD5 等算法算出一串“乱码”（这就是签名）。
+4. **验证**：服务端收到请求后，拿到明文的 `AK`，去数据库查出对应的 `SK`。然后服务端用同样的参数和 `SK` 再算一次签名。如果两次签名一致，说明请求确实是这个用户发出的，且参数没有被篡改。
+
+## 实现签名生成算法
+
+### 第一步：打造签名生成算法
+
+我们先回到 `api-platform-common` 模块，把这个签名算法写成一个通用的工具类，这样以后不管是客户端发请求，还是服务端做校验，都可以复用。
+
+```java
+/**
+ * API签名工具类
+ */
+public class SignUtils {
+    /**
+     * 生成API调用签名
+     *
+     * @param body 请求体内容（或者请求参数）
+     * @param secreKey 用户的私钥
+     * @return 经过MD5加密的签名字符串
+     */
+    public static String genSign(String body,String secreKey){
+
+//        防止明文拼接被破解，可以在body和secretKey之间加入一个固定的分隔符，增加破解难度
+        String content = body+ "." + secreKey;
+
+        return DigestUtils.md5DigestAsHex(content.getBytes(StandardCharsets.UTF_8));
+//            TODO:一般还会把随机数（Nonce）和时间戳（Timestamp）加入签名拼接中，以此防范“重放攻击”
+//             目前先用最精简的 body + SK 跑通主流程，后面做网关拦截时可以再加固
+    }
+}
+
+```
+
+#### 第二步：定义标准的请求头契约
+
+为了让签名机制生效，客户端每次调用我们的接口，都必须在 HTTP 请求头（Header）里携带以下四个关键信息：
+
+1. `accessKey`：标识调用者身份。
+2. `nonce`：随机数（防止重放攻击）。
+3. `timestamp`：时间戳（防止请求过期）。
+4. `sign`：利用我们刚才的工具类算出来的签名。
+
+到这里签名算法工具就准备好了，接下来就是在服务端写一个拦截器，专门去扒取请求头里的签名，并去数据库里查信息对比
+
+## 实现服务端拦截器
+
+接下来，需要在 `api-platform-interface` 模块里建立这道“安检门”，标准步骤如下：
+
+1. **拦截请求**：在 HTTP 请求到达 `NameController` 之前，强制把它拦下。
+2. **扒取请求头**：从 Header 中提取出调用方传来的 `accessKey`、`nonce`、`timestamp` 和 `sign`。
+3. **风控基础校验**：
+   - 防过期：判断 `timestamp` 是不是超过了 5 分钟？（防止黑客拿着几天前的请求一直刷）。
+   - 防重放：判断 `nonce`（随机数）是不是在短时间内已经被用过了？
+4. **核心签名校验**：根据 `accessKey` 去数据库查出这个用户的 `secretKey`。服务端用同样的参数和查到的私钥再算一遍签名，如果算出来的结果和传过来的 `sign` 严丝合缝，安检放行；否则，直接报“无权限”踢出。
+
+在实现拦截器时，一般有两个注意点：
+
+1. 这个拦截动作通常会放在**统一网关（Gateway）**里做，而不是每个具体的微服务自己做。
+2. 校验签名时，需要去数据库查 `SecretKey`。但我们的 `api-platform-interface` 是一个模拟第三方接口的独立模块，它没有连接主数据库。
+
+所以为了跑通核心的**签名算法和防刷逻辑**，这个阶段先在这个 `interface` 模块里写一个本地拦截器，并且在代码里**Mock**一个正确的 AK 和 SK。等到了项目第四阶段（引入 Gateway 和 RPC），我们会把这段逻辑无缝迁移到网关，并连上真实的数据库。
+
+### 第一步：引入 Common 模块依赖
+
+我们需要用到刚才在 `common` 模块写的 `SignUtils` 工具类，添加下面的依赖：
+
+```xml
+<dependency>
+            <groupId>com.accycx</groupId>
+            <artifactId>api-platform-common</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+```
+
+### 第二步：编写核心安全拦截器 (Interceptor)
+
+在 `api-platform-interface` 的`apiinterface` 下新建包 `interceptor`，然后创建 `ApiAuthInterceptor.java`。
+
+这段代码包含了防伪造、防重放、防过期的风控逻辑：
+
+```java
+
+/**
+ * API 调用全局权限拦截器
+ */
+@Component
+public class ApiAuthInterceptor implements HandlerInterceptor {
+
+//    模拟数据库中查出来的分配给这个用户的真实AK和SK
+    private static final String MOCK_AK = "accycx_test_ak";
+    private static final String MOCK_SK = "accycx_test_sk";
+
+    @Override
+    public boolean preHandle(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull Object handler) throws Exception{
+//        1.从请求头中扒取调用方带过来的凭证
+        String accessKey = request.getHeader("accessKey");
+        String nonce = request.getHeader("nonce");
+        String timestamp = request.getHeader("timestamp");
+        String sign = request.getHeader("sign");
+        String body = request.getHeader("body");
+
+//        2.校验AK是否存在及合法
+        if(accessKey == null || !accessKey.equals(MOCK_AK)){
+            throw new RuntimeException("无权限：AccessKey 错误或不存在");
+        }
+
+//        3.防重放：校验随机数（简单版）
+//        一般做法：把nonce存进Redis，如果发现这个nonce已经存在，说明是黑客在重放攻击，直接拒绝
+//        这里先简单校验长度，大于4位即可
+        if(nonce == null || nonce.length() <4){
+            throw new RuntimeException("无权限：非法请求（Nonce 不合法）");
+        }
+
+//        4.防过期：校验时间戳
+        if(timestamp == null){
+            throw new RuntimeException("无权限：缺少时间戳");
+        }
+
+//        计算当前时间与请求时间的差值（设定请求有效期为5分钟）
+        long currentTime = System.currentTimeMillis() / 1000;
+        final long FIVE_MINUTES = 5 * 60;
+        if((currentTime - Long.parseLong(timestamp)) >= FIVE_MINUTES){
+            throw new RuntimeException("无权限：请求过期");
+        }
+
+//        5.校验签名
+//        服务端使用同样的body和查出来的真实SK再算一遍签名
+        String serverSign = SignUtils.genSign(body,MOCK_SK);
+
+//        比对调用方传来的签名和算出来的签名是否一致
+        if(sign == null || !sign.equals(serverSign)){
+            throw new RuntimeException("无权限：签名校验失败，数据可能被篡改！");
+        }
+
+//        所有安检通过，放行请求，进入对应的Controller
+        return true;
+    }
+}
+
+```
+
+这段代码采用了 Timestamp + Nonce 的双重防御。首先判断 Timestamp 是否过期（通常是 5 分钟），拦截掉旧请求。然后将 Nonce（随机数）存入 Redis 并设置 5 分钟过期时间。每次请求来时去 Redis 查，如果 Nonce 已经存在，说明是重放攻击，直接拒绝。这两者结合，保证了安全又不会撑爆 Redis 内存。
+
+当然现阶段还没有引入Redis，所以到阶段四的时候会完善。
+
+### 第三步：注册拦截器并挂载到接口上
+
+拦截器写好了，但 Spring Boot 还不知道要把这扇门安在哪里。我们需要写一个配置类，告诉系统：“所有访问 `/**` 的请求，都必须走这个安检门。”
+
+在 `apiinterface` 包下新建包 `config`，创建 `MvcConfig.java`：
+
+```java
+/**
+ * Web MVC 配置类
+ */
+@Configuration
+public class MvcConfig implements WebMvcConfigurer {
+
+    @Autowired
+    private ApiAuthInterceptor apiAuthInterceptor;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry){
+//        将拦截器注册到Spring MVC中
+        registry.addInterceptor(apiAuthInterceptor)
+                .addPathPatterns("/**");//拦截所有进入此服务的请求
+    }
+}
+
+```
+
+现在重新启动接口服务并访问之前测试过的简单的地址：
+
+http://localhost:8102/name/get?name=accycx
+
+会抛出500异常，控制台会打印出写的报错信息：“无权限：`AccessKey`错误或不存在”，这就说明拦截器生效了
+
+# SDK
+
+## 模拟用户使用接口服务
+
+由于手写底层的 `HttpURLConnection`太过繁琐，所以我们在这里引入**Hutool**工具包
+
+### 第一步：引入 Hutool 工具包
+
+在`api-platform-interface` 模块引入依赖：
+
+```xml
+<dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>5.8.16</version>
+        </dependency>
+```
+
+### 第二步：编写客户端调用类 (`ApiClient.java`)
+
+在 `api-platform-interface` 模块的`apiinterface` 下新建一个包 `client`，然后创建 `ApiClient.java`：
+
+```java
+/**
+ * 调用第三方接口的客户端类
+ */
+public class ApiClient {
+
+    private final String accessKey;
+    private final String secretKey;
+
+//    构造方法，强制要求调用者传入AK和SK
+    public ApiClient(String accessKey,String secretKey){
+        this.accessKey = accessKey;
+        this.secretKey = secretKey;
+    }
+
+    /**
+     * 核心逻辑：组装请求头
+     * 把凭证全部放在Header里
+     */
+    private Map<String,String> getHeaderMap(String body){
+        Map<String,String> hashMap = new HashMap<>();
+        hashMap.put("accessKey",accessKey);
+
+//       生成随机数（防重放）
+        hashMap.put("nonce", RandomUtil.randomNumbers(4));
+
+//        生成当前时间戳（防过期）
+        hashMap.put("timestamp",String.valueOf(System.currentTimeMillis() / 1000));
+
+//        将请求体参与签名计算
+        hashMap.put("body",body);
+
+//        生成签名
+        hashMap.put("sign", SignUtils.genSign(body,secretKey));
+
+        return hashMap;
+    }
+
+//    1.调用GET接口
+    public String getNameByGet(String name){
+//        Hutool的HttpUtil可以简化HTTP请求的发送
+        HashMap<String,Object> paramMap = new HashMap<>();
+        paramMap.put("name",name);
+        String result = HttpUtil.get("http://localhost:8102/name/get",paramMap);
+        System.out.println(result);
+        return result;
+    }
+
+//    2.调用POST URL传参接口
+    public String getNameByPost(String name){
+        HashMap<String,Object> paramMap = new HashMap<>();
+        paramMap.put("name",name);
+        String result = HttpUtil.post("http://localhost:8102/name/post",paramMap);
+        System.out.println(result);
+        return result;
+    }
+
+//    3.调用POST JSON接口（携带签名）
+    public String getUserNameByPost(User user){
+//        将User对象转为JSON字符串
+        String json = JSONUtil.toJsonStr(user);
+
+//        发送带请求头的HTTP请求
+        HttpResponse httpResponse = HttpRequest.post("http://localhost:8102/name/user")
+                .addHeaders(getHeaderMap(json)) //关键：把算好的签名头放进去
+                .body(json) //塞入请求体
+                .execute();
+
+        System.out.println(httpResponse.body());
+        String result = httpResponse.body();
+        System.out.println(result);
+        return result;
+
+    }
+}
+```
+
+### 第三步：测试安检门
+
+在 `api-platform-interface` 的 `src/test/java` 目录下建一个 `Main.java` 测试类，编写测试代码：
+
+```java
+public class Main {
+    public static void main(String[] args) {
+        // 1. 填入在拦截器里 Mock 好的真实 AK 和 SK
+        String accessKey = "accycx_test_ak";
+        String secretKey = "accycx_test_sk";
+        // 2. 实例化客户端
+        ApiClient apiClient = new ApiClient(accessKey, secretKey);
+        // 3. 准备参数
+        User user = new User();
+        user.setUsername("accycx");
+        // 4. 发起带有签名验证的请求
+        System.out.println("----- 测试开始 -----");
+        String result = apiClient.getUserNameByPost(user);
+        System.out.println("服务端返回结果"+ result);
+    }
+}
+
+```
+
+启动接口服务，并运行测试类，得到结果：
+
+![测试结果](https://bu.dusays.com/2026/04/08/69d6380e09845.png)
+
+故意把 `String secretKey = "accycx_test_sk";`改错后再测试，后台会返回错误信息：
+
+![测试结果](C:\Users\86173\AppData\Roaming\Typora\typora-user-images\image-20260409113938157.png)
+
+## 开发SDK
+
+为什么要开发 SDK？
+
+刚才我们为了测试接口，在 `Main` 方法里手动组装了 Header，手动算了 Sign。 试想一下，如果你的平台有 1000 个开发者接入，难道你要让这 1000 个人每个人都去研究你的签名算法，然后各自写一遍 `SignUtils` 和 `ApiClient` 吗？ 如果他们算错了哪怕一个字符，就会一直报 500 错误，然后疯狂找你对线。
+
+解决方法：官方提供一个 **SDK（比如一个定制的 Spring Boot Starter）**。开发者只需要引入这个依赖，在 `application.yml` 里填上你发给他的 AK/SK，剩下的签名计算、请求头拼接，SDK 全部在底层自动搞定。开发者只需要写一行代码 `apiClient.getUserNameByPost(user)` 就能拿到数据。
+
+### 第一步：创建独立的 SDK 模块
+
+由于 SDK 是要打成 jar 包发给别人用的，它必须是一个干净、纯粹的模块，所以在根工程下，新建一个模块，命名为 **`api-platform-client-sdk`**。
+
+1. 配置 `pom.xml`
+
+这是 SDK 的核心依赖，注意，我们要引入 `spring-boot-configuration-processor`，这是做自定义 Starter 的灵魂，它能让使用 SDK 的人在 `application.yml` 里敲代码时拥有自动提示功能。
+
+```xml
+  <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>5.8.16</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+2. 搬运核心资产 (代码大迁移)
+
+为了让 SDK 独立运行，我们需要把刚才在其他模块写的几个类**原封不动**地复制到 `api-platform-client-sdk` 的 `src/main/java/com/jingxuan/apiclientsdk` 包下：
+
+1. `User.java` (专门接收参数的小模型)
+2. `SignUtils.java` (签名工具)
+3. `ApiClient.java` (客户端)
+
+然后把`api-platform-interface`包下的`ApiClient.java`删了
+
+### 第二步：编写自动装配类 (`AutoConfiguration`)
+
+我们要写一段配置代码，让 Spring Boot 在启动时，自动读取配置文件里的 AK/SK，然后自动帮我们创建一个 `ApiClient` 实例扔进 Spring 容器里（`@Bean`）。
+
+**1. 创建属性配置类** 
+
+在 `apiclientsdk` 包下新建 `client` 包，创建 `ApiClientConfig.java`：
+
+```java
+/**
+ * ApiClient 自动配置类
+ */
+@Configuration
+//这个注解的意思是：去 application.yml 里读取前缀为 "api.client" 的配置，映射到这个类的属性上
+@ConfigurationProperties("api.client")
+@Data
+@ComponentScan
+public class ApiClientConfig {
+
+    private String accessKey;
+    private String secretKey;
+
+    /**
+     * 将ApiClient 注入到Spring容器中国
+     */
+    public ApiClient apiClient(){
+//        使用配置文件中读取到的ak和sk实例化客户端
+        return new ApiClient(accessKey, secretKey);
+    }
+}
+
+```
+
+**2. 注册自动配置类** 
+
+由于我们是要做一个给别人用的 jar 包，别人项目启动时，默认只会扫描他们自己包下的类，根本扫不到我们写的 `ApiClientConfig`。
+
+在 `src/main/resources` 目录下，**依次**新建三个嵌套文件夹：`META-INF` -> `spring`。 最终路径为：`src/main/resources/META-INF/spring`。
+
+在这个文件夹下，新建一个文本文件，名字必须叫：**`org.springframework.boot.autoconfigure.AutoConfiguration.imports`** *
+
+在这个文件中，写入刚才写的配置类的全限定名：
+
+```
+com.accycx.apiclientsdk.client.ApiClientConfig
+```
+
+完成这两步之后，API开放平台客户端SDK就大功告成了，下面在interface模块里面引入它测试一下
+
+### 模拟测试
+
+#### 第一步：将 SDK 打包并安装到本地仓库
+
+现在写的SDK只是普通代码，我们需要把它变成一个 `.jar` 包，并放到电脑本地的 Maven 仓库（`.m2` 文件夹）里，这样其他模块才能引用它。
+
+在maven面板里面给SDK模块`clean`再`install`一遍，SDK就发布好了。
+
+**为什么要点 `install` 而不是 `package`？** 
+
+因为 `package` 只是把 jar 包打在当前模块的 `target` 目录下；而 `install` 会把打好的 jar 包安装到本地的 Maven 仓库中，让整台电脑里的其他项目都能通过 `pom.xml` 搜到并使用它。
+
+#### 第二步：在测试模块引入 SDK
+
+现在回到之前测试用的 **`api-platform-interface`** 模块，我们要把刚刚自己写的 SDK 像引入 Spring Boot 官方组件一样引进来。
+
+打开 `api-platform-interface` 模块的 `pom.xml`，在 `<dependencies>` 中加入：
+
+```xml
+        <dependency>
+            <groupId>com.accycx</groupId>
+            <artifactId>api-platform-client-sdk</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+```
+
+#### 第三步：在配置文件中填入凭证（极简配置）
+
+打开 `api-platform-interface` 模块的 `src/main/resources/application.yml`，在最下面加上我们在 SDK 里定义好的配置前缀：
+
+```yaml
+api:
+  client:
+    access-key: jingxuan_test_ak
+    secret-key: jingxuan_test_sk
+```
+
+#### 第四步：使用 Spring Boot Test 测试
+
+既然交给了 Spring Boot 自动装配，我们就不能用普通的 `main` 方法测试了，因为普通的 `main` 方法没有启动 Spring 容器。我们需要用 Spring Boot 的单元测试。
+
+在 `api-platform-interface` 的 `src/test/java/com/accycx/apiinterface` 目录下，新建（或修改已有的）测试类 `ApiInterfaceApplicationTests.java`：
+
+```java
+@SpringBootTest
+class ApiPlatformInterfaceApplicationTests {
+
+    // 这个没有写任何 new ApiClient() 的代码，直接注入就能用
+    // 因为我们写的 SDK 里的 AutoConfiguration 已经在后台帮我们把 application.yml 里的密钥塞进去并实例化了。
+    @Resource
+    private ApiClient apiClient;
+
+    @Test
+    void contextLoads() {
+        // 1. 准备参数
+        User user = new User();
+        user.setUsername("AccyCx");
+
+        // 2. 一行代码，直接调用！SDK 在底层会自动算好签名、拼好请求头并发送。
+        String result = apiClient.getUserNameByPost(user);
+
+        System.out.println("测试结果：" + result);
+    }
+}
+```
+
+点击测试，可以看到控制台成功打印了结果，如图
+
+![测试结果](https://bu.dusays.com/2026/04/12/69dbb4e6e7e31.png)
+
+到这里就说明我们的自定义SDK已经大功告成了！
