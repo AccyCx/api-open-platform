@@ -1,2 +1,7 @@
 server:
   port: 8102 # 接口服务跑在 8102 端口
+
+api:
+  client:
+    access-key: accycx_test_ak
+    secret-key: accycx_test_sk

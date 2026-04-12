@@ -27,9 +27,13 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
         String sign = request.getHeader("sign");
         String body = request.getHeader("body");
 
+
 //        2.校验AK是否存在及合法
-        if(accessKey == null || !accessKey.equals(MOCK_AK)){
-            throw new RuntimeException("无权限：AccessKey 错误或不存在");
+        if(accessKey == null ){
+            throw new RuntimeException("无权限：AccessKey 不存在");
+        }
+        if(!accessKey.equals(MOCK_AK)){
+            throw new RuntimeException("无权限：AccessKey 错误");
         }
 
 //        3.防重放：校验随机数（简单版）
