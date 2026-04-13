@@ -113,7 +113,7 @@ public class InterfaceInfoController {
      */
     @PostMapping("/invoke")
     @Operation(summary = "在线调用测试接口")
-    public BaseResponse<Object> invokeINterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest){
+    public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest){
 //        1.校验参数
         if(invokeRequest == null || invokeRequest.getId() <=0){
             return ResultUtils.success(ErrorCode.PARAMS_ERROR);
