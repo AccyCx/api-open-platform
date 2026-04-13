@@ -1,10 +1,13 @@
 package com.accycx.apiplatforminterface.interceptor;
 
 
+import com.accycx.common.service.InnerUserService;
 import com.accycx.common.utils.SignUtils;
+import com.accycx.model.entity.User;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.NonNull;
+import org.apache.dubbo.config.annotation.DubboReference;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
@@ -14,9 +17,10 @@ import org.springframework.web.servlet.HandlerInterceptor;
 @Component
 public class ApiAuthInterceptor implements HandlerInterceptor {
 
-//    模拟数据库中查出来的分配给这个用户的真实AK和SK
-    private static final String MOCK_AK = "accycx_test_ak";
-    private static final String MOCK_SK = "accycx_test_sk";
+
+    @DubboReference //核心：告诉Dubbo这是一个服务引用，远程调用 InnerUserService 的方法
+    private InnerUserService innerUserService;
+
 
     @Override
     public boolean preHandle(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull Object handler) throws Exception{
@@ -32,7 +36,9 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
         if(accessKey == null ){
             throw new RuntimeException("无权限：AccessKey 不存在");
         }
-        if(!accessKey.equals(MOCK_AK)){
+
+        User invokeUser = innerUserService.getInvokeUser(accessKey);
+        if(invokeUser == null){
             throw new RuntimeException("无权限：AccessKey 错误");
         }
 
@@ -57,7 +63,8 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
 
 //        5.校验签名
 //        服务端使用同样的body和查出来的真实SK再算一遍签名
-        String serverSign = SignUtils.genSign(body,MOCK_SK);
+        String secretKey = invokeUser.getSecretKey();
+        String serverSign = SignUtils.genSign(body,secretKey);
 
 //        比对调用方传来的签名和算出来的签名是否一致
         if(sign == null || !sign.equals(serverSign)){
