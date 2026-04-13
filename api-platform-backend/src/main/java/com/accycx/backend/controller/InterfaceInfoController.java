@@ -1,18 +1,20 @@
 package com.accycx.backend.controller;
 
 
+import com.accycx.apiclientsdk.client.ApiClient;
 import com.accycx.backend.service.InterfaceInfoService;
 import com.accycx.common.BaseResponse;
 import com.accycx.common.ErrorCode;
 import com.accycx.common.utils.ResultUtils;
 import com.accycx.model.dto.common.DeleteRequest;
 import com.accycx.model.dto.interfaceinfo.InterfaceInfoAddRequest;
+import com.accycx.model.dto.interfaceinfo.InterfaceInfoInvokeRequest;
 import com.accycx.model.dto.interfaceinfo.InterfaceInfoUpdateRequest;
 import com.accycx.model.entity.InterfaceInfo;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
 import org.springframework.beans.BeanUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -23,8 +25,11 @@ import org.springframework.web.bind.annotation.*;
 @Tag(name = "接口管理",description = "管理员和用户对API接口的增删改查")
 public class InterfaceInfoController {
 
-    @Autowired
+    @Resource
     private InterfaceInfoService interfaceInfoService;
+
+    @Resource
+    private ApiClient apiClient;
 
     // TODO: 这里还需要引入 UserService 获取当前登录用户的 ID，目前我们先写死或跳过.等后面完善网关拦截再补充
 
@@ -102,6 +107,45 @@ public class InterfaceInfoController {
         InterfaceInfo interfaceInfo = interfaceInfoService.getById(id);
         return ResultUtils.success(interfaceInfo);
     }
+
+    /**
+     * 在线调用（测试）接口
+     */
+    @PostMapping("/invoke")
+    @Operation(summary = "在线调用测试接口")
+    public BaseResponse<Object> invokeINterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest){
+//        1.校验参数
+        if(invokeRequest == null || invokeRequest.getId() <=0){
+            return ResultUtils.success(ErrorCode.PARAMS_ERROR);
+        }
+
+//        2.判断接口是否存在
+        long id = invokeRequest.getId();
+        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+        if(oldInterfaceInfo == null){
+            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
+        }
+
+//        3.判断接口状态是否开启（1是开启）
+        if(oldInterfaceInfo.getStatus() != 1){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"接口已关闭");
+        }
+
+//        4.发起实际调用
+//        这里应该根据oldInterfaceInfo.getUrl()动态去调
+//        但是目前为了跑通主流程，先用if-else写死判断，只测试"/name/user"接口
+        String userRequestParams = invokeRequest.getUserRequestParams();
+        if(oldInterfaceInfo.getUrl().contains("/name/user")){
+//            利用Hutool将前端传来的JSON字符串反序列化为User对象
+        com.accycx.apiclientsdk.model.User user = cn.hutool.json.JSONUtil.toBean(userRequestParams, com.accycx.apiclientsdk.model.User.class);
+
+//        主后台使用装配好的SDK客户端发起真实网络请求
+            String result = apiClient.getUserNameByPost(user);
+            return ResultUtils.success(result);
+        }
+        return ResultUtils.error(ErrorCode.PARAMS_ERROR,"目前仅支持测试/name/user接口");
+    }
+
 }
 
 
