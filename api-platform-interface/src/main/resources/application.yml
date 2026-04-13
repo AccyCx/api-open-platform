@@ -3,5 +3,11 @@ server:
 
 api:
   client:
-    access-key: accycx_test_ak
-    secret-key: accycx_test_sk
+    access-key: 512bb9f11e5d4a99be54e560ba8c5595
+    secret-key: ce013ef728099f1c5a4c2102e46c40b2
+
+dubbo:
+  application:
+    name: api-platform-interface
+  registry:
+    address: nacos://localhost:8848

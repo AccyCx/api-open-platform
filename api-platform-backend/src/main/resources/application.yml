@@ -18,3 +18,12 @@ api:
   client:
     access-key: accycx_admin_ak
     secret-key: accycx_admin_sk
+
+dubbo:
+  application:
+    name: api-platform-backend #服务名
+  protocol:
+    name: dubbo
+    port: -1 #随机可用端口
+  registry:
+    address: nacos://localhost:8848 #注册到Nacos
