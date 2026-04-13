@@ -1825,3 +1825,338 @@ class ApiPlatformInterfaceApplicationTests {
 ![测试结果](https://bu.dusays.com/2026/04/12/69dbb4e6e7e31.png)
 
 到这里就说明我们的自定义SDK已经大功告成了！
+
+但是，我们刚才只是在`interface` 模块里“本地模拟”了第三方开发者。这只证明了我们的SDK能发请求，`interface` 能拦请求，整个平台的闭环还没有打通。
+
+- **缺失的拼图一：动态分配凭证。** 现在的 AK/SK 都是我们为了跑通主流程在代码里写死的（`accycx_test_ak`）。真实情况是，每个用户注册后，会在主平台的数据库里生成自己独一无二的 AK/SK。
+- **缺失的拼图二：真实的验签逻辑。** 我们的 `interface` 服务现在是在本地拦截器里写死了AK、SK 来对比。真实的业务是：`interface` 服务收到请求后，必须通过**某种方式**，拿着用户传过来的 `accessKey`，去**主数据库**里查出对应的 `secretKey`，才能完成验签。
+
+**所以，下一步要进行：主后台与SDK联动。**
+
+## 主后台与SDK联动
+
+我们要把刚才写好的、纯净无暇的 SDK 接入到主业务模块 **`api-platform-backend`** 中，让主后台真正拥有调用 API 的能力。
+
+未来的业务场景：
+
+管理员可以在主平台的管理界面上，直接点击一个“在线测试调用”按钮，主后台底层就会使用这个 SDK，自动带着管理员的 AK/SK 去调用 `interface` 模块里的真实接口，并把结果展示在页面上！
+
+### 第一步：在主业务后台引入 SDK
+
+打开 **`api-platform-backend`** 模块的 `pom.xml`，把我们的轮子装上去：
+
+```xml
+		<dependency>
+			<groupId>com.accycx</groupId>
+			<artifactId>api-platform-client-sdk</artifactId>
+			<version>1.0-SNAPSHOT</version>
+		</dependency>
+```
+
+### 第二步：给主后台配置“管理员”凭证
+
+为了让主后台能代表平台方去“在线测试”接口，我们需要给主后台配置一套凭证（这也是我们 SDK 自动装配必须的）。
+
+打开 `api-platform-backend` 模块的 `src/main/resources/application.yml`，在底部添加：
+
+```yaml
+api:
+  client:
+    access-key: accycx_admin_ak
+    secret-key: accycx_admin_sk
+```
+
+第三步：编写“在线调用”业务逻辑
+
+我们在之前的`InterfaceInfoController`，增加一个“在线测试调用”的接口。
+
+**1. 新建在线测试请求体 (DTO)** 在 `api-platform-model` 模块下的 `com.accycx.model.dto.interfaceinfo` 包中，新建 `InterfaceInfoInvokeRequest.java`：
+
+```java
+/**
+ * 接口调用请求体
+ */
+@Data
+public class InterfaceInfoInvokeRequest implements Serializable {
+
+//    接口主键id
+    private Long id;
+
+//    用户传入的测试参数（如果是JSON格式，那就是那一串JSON字符串）
+    private String userRequestParams;
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+}
+
+```
+
+**2. 增加调用 Controller 接口** 回到 `api-platform-backend` 模块的 `InterfaceInfoController`，在最下面添加这个接口：
+
+```java
+    @Resource
+    private ApiClient apiClient;
+   
+   /**
+     * 在线调用（测试）接口
+     */
+    @PostMapping("/invoke")
+    @Operation(summary = "在线调用测试接口")
+    public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest){
+//        1.校验参数
+        if(invokeRequest == null || invokeRequest.getId() <=0){
+            return ResultUtils.success(ErrorCode.PARAMS_ERROR);
+        }
+
+//        2.判断接口是否存在
+        long id = invokeRequest.getId();
+        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+        if(oldInterfaceInfo == null){
+            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
+        }
+
+//        3.判断接口状态是否开启（1是开启）
+        if(oldInterfaceInfo.getStatus() != 1){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"接口已关闭");
+        }
+
+//        4.发起实际调用
+//        这里应该根据oldInterfaceInfo.getUrl()动态去调
+//        但是目前为了跑通主流程，先用if-else写死判断，只测试"/name/user"接口
+        String userRequestParams = invokeRequest.getUserRequestParams();
+        if(oldInterfaceInfo.getUrl().contains("/name/user")){
+//            利用Hutool将前端传来的JSON字符串反序列化为User对象
+        com.accycx.apiclientsdk.model.User user = cn.hutool.json.JSONUtil.toBean(userRequestParams, com.accycx.apiclientsdk.model.User.class);
+
+//        主后台使用装配好的SDK客户端发起真实网络请求
+            String result = apiClient.getUserNameByPost(user);
+            return ResultUtils.success(result);
+        }
+        return ResultUtils.error(ErrorCode.PARAMS_ERROR,"目前仅支持测试/name/user接口");
+    }
+
+```
+
+写完这段代码后，`/invoke` 接口就完成了，现在我们可以把interface模块的接口地址信息用之前写过的增加接口功能存入数据库里，然后再用`ApiFox`测试这个新添的接口。
+
+## 跨服务鉴权与 RPC 调用
+
+之前我们为了跑通流程，在interface模块的拦截器里写了：`private static final String MOCK_SK = "accycx_test_sk1";`这样的模拟数据，并没有从数据库里查询真实数据。
+
+**目前的问题：**
+
+1. `interface` 模块收到了调用者的 `accessKey`。
+2. 它需要查出对应的 `secretKey` 来验签。
+3. 但用户信息存在主库 `api_platform` 中，**而 `interface` 作为一个模拟的第三方独立微服务，绝对不能直接连主库**（如果每个微服务都能直连主库，一旦数据库崩溃，全盘皆输，这就违背了微服务架构的初衷）。
+
+所以我们需要用到**RPC（远程过程调用）** 
+
+让 `interface` 模块在代码里打个“内线电话”，调用主业务 `backend` 模块里的方法去查数据库。这个“电话线”，我们要用到的技术选型就是 **Apache Dubbo**。
+
+为了打通 Dubbo，我们分为**三步走**，现在直接开始第一步：**建立通信契约**。
+
+### 第一步：在 Common 模块定义“内线服务接口”
+
+在微服务中，两个服务要打电话，必须要有一个双方都认识的“电话簿”（公共接口）。这个电话簿理所当然要放在大家都能引用的 **`api-platform-common`** 模块里。
+
+打开 `api-platform-common` 模块，在 `src/main/java/com/accycx/common` 下新建一个包 `service`，然后创建两个**专门用于内部调用的 RPC 接口**（注意：这和我们之前在 backend 里写的对外 Service 是不一样的）：
+
+**1. 内部用户服务 (`InnerUserService.java`)** 
+
+用于 `interface` 模块向 `backend` 查询用户的 AK/SK 是否合法。
+
+```java
+/**
+ * 内部用户服务（仅供微服务内部调用）
+ */
+public interface InnerUserService {
+
+    /**
+     * 数据库中查是否已分配给用户秘钥（根据accessKey 查找到对应的User，里面包含secretKey）
+     *
+     * @param accessKey 用户秘钥
+     * @return 如果找不到返回null
+     */
+    User getInvokeUser(String accessKey);
+}
+
+```
+
+**2. 内部接口信息服务 (`InnerInterfaceInfoService.java`)** 
+
+用于 `interface` 模块查询用户正在调用的这个接口，在数据库里是否存在？是不是开启状态？
+
+```java
+/**
+ * 内部接口信息服务
+ */
+public interface InnerInterfaceInfoService {
+
+    /**
+     * 从数据库中查询接口是否存在（请求路径、请求方法、状态为开启）
+     *
+     * @param path 请求路径
+     * @param method 请求方法
+     * @return 如果找不到返回null
+     */
+    InterfaceInfo getInterfaceinfo(String path, String method);
+}
+
+```
+
+这两个接口里用到了 `User` 和 `InterfaceInfo` 实体类。因为现在这两个类还在 `model` 模块里，而 `common` 并没有引入 `model`，引用一下就好了。
+
+契约定好了，接下来就需要把**`Dubbo` 和 `Nacos`（注册中心）** 引入到项目中，让 `backend` 把电话接起来，让 `interface` 把电话拨出去。
+
+### 第一步：环境整备（依赖与中间件）
+
+在写代码前，我们得先在本地启动 `**Nacos**`。它就像是微服务世界的“中枢站”，没有它，服务之间找不到彼此。
+
+1.启动 `Nacos` 服务，默认端口 8848
+
+下载 `Nacos` 2.x 并在本地启动。启动成功后，访问 `http://localhost:8848/nacos`，看到控制台界面就说明中间件准备好了。
+
+2.在父工程/Common 引入依赖，统一版本管理
+
+在主 `pom.xml` 中引入 Spring Cloud Alibaba 依赖。然后在 `backend` 和 `interface` 的 `pom.xml` 中分别加入：
+
+- `dubbo-spring-boot-starter`
+- `spring-cloud-starter-alibaba-nacos-discovery`
+
+### 第二步：服务端（backend）接电话
+
+我们要让 `backend` 模块把之前在 `common` 里定义的契约接口实现出来，并通过 Dubbo 广播出去。
+
+1. **实现内部服务类**
+
+在 `api-platform-backend` 的 `service.impl` 下新建 `InnerUserServiceImpl.java`：
+
+```java
+@DubboService //核心：告诉Dubbo这是一个服务实现类，提供给其他微服务调用
+public class InnerUserServiceImpl implements InnerUserService {
+
+    @Resource
+    private UserMapper userMapper;
+
+    @Override
+    public User getInvokeUser(String accessKey){
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("access_key", accessKey);
+        return userMapper.selectOne(queryWrapper);
+    }
+}
+
+```
+
+2. **配置 backend 的 `application.yml`**
+
+```yaml
+dubbo:
+  application:
+    name: api-platform-backend # 服务名
+  protocol:
+    name: dubbo
+    port: -1 # 随机可用端口
+  registry:
+    address: nacos://localhost:8848 # 注册到 Nacos
+```
+
+### 第三步：调用端（interface）拨电话
+
+现在我们要改掉那个写死的 `MOCK_SK`，让拦截器去实时查数据库。
+
+1. **配置 interface 的 `application.yml**`
+
+```yaml
+dubbo:
+  application:
+    name: api-platform-interface
+  registry:
+    address: nacos://localhost:8848
+```
+
+2. **重构拦截器 `ApiAuthInterceptor.java`**
+
+在这里，我们用 `@DubboReference`把远在另一个进程的对象调过来
+
+```java
+public class ApiAuthInterceptor implements HandlerInterceptor {
+
+    @DubboReference // 核心：远程引用 backend 暴露的服务
+    private InnerUserService innerUserService;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request, ...) {
+        String accessKey = request.getHeader("accessKey");
+        
+        // 1. 动态查库：不再是 MOCK，而是真的去 backend 查
+        User invokeUser = innerUserService.getInvokeUser(accessKey);
+        if (invokeUser == null) {
+            throw new RuntimeException("无权限：AccessKey 错误");
+        }
+        
+        // 2. 拿到真实的 secretKey 进行验签
+        String secretKey = invokeUser.getSecretKey();
+        String serverSign = SignUtils.genSign(body, secretKey);
+        
+        if (!sign.equals(serverSign)) {
+            throw new RuntimeException("无权限：签名校验失败");
+        }
+        return true;
+    }
+}
+```
+
+最后记得在主类加上`@EnableDubbo`注解
+
+```java
+@SpringBootApplication
+@EnableDubbo
+public class ApiPlatformBackendApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(ApiPlatformBackendApplication.class, args);
+	}
+
+}
+
+```
+
+然后现在准备联调测试
+
+**1.启动 `Nacos`**。
+
+**2.启动 Backend**：查看 `Nacos` 控制台的“服务列表”，如果出现了 `api-platform-backend`，说明电话接通了。
+
+**3.启动 Interface**。
+
+**4.运行之前的 SDK 测试用例**：如果控制台依然返回成功，说明这一通“跨服务内线电话”打通了！
+
+结果如图：
+
+![测试结果](https://bu.dusays.com/2026/04/12/69dbb4e6e7e31.png)
+
+到这里本项目的阶段三就完成了，接下来将进入阶段四：网关与中间件（高并发攻坚），然后会先搭建统一API网关（Gateway）
+
+**目前架构的痛点：** 现在我们的验签拦截器 (`ApiAuthInterceptor`) 是写在 `api-platform-interface` 这个具体的接口服务里的。 假设以后平台做大了，又开发了 `weather-interface`（天气服务）、`sms-interface`（短信服务）、`ai-interface`（AI 问答服务），难道要把这坨又臭又长的验签拦截器，在每一个项目里都复制粘贴一遍吗？如果哪天签名算法要升级，那得改多少个项目？
+
+所以我们需要在所有微服务的最前面，建立一个统一的“海关大楼”（网关模块）。
+
+1. 所有的第三方开发者（SDK）不再直接请求具体的接口，而是**把请求全部打到网关**。
+2. **网关负责统一验签**：把拦截器里的代码搬到网关里，验签通过后，网关再负责把请求**路由（转发）**到对应的真实接口服务。
+3. 保护真实服务：真实的接口服务将不再对外暴露端口，只允许网关访问。
+
+另外还能解决接口调用次数统计的问题，因为我们做的是一个API开放平台，平台是要算计配额的。“调用次数”是这个项目的核心业务数据。网关不仅要验签，还要在转发请求成功后，**让这个用户的接口剩余调用次数减 1**。
+
+这就需要我们用到之前建好的 `user_interface_info`（用户接口关系表），并且再次用到 Dubbo 的 RPC 调用。
+
+接下来的路线：
+
+**1.新建 网关模块** (`api-platform-gateway`)。
+
+**2.迁移 鉴权逻辑**：把 `interface` 里的拦截器废弃，在网关里写一个 **全局过滤器 (`GlobalFilter`)** 来接管验证。
+
+**3.实现 次数统计**：利用 Dubbo 发起 RPC 调用，在数据库里对调用次数进行 `count + 1`，剩余配额 `leftNum - 1`。
+
+**4.路由 转发**：网关验证无误后，把请求平滑地送到 `interface`。
+
