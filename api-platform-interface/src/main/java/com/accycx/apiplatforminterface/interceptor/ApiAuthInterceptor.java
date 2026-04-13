@@ -17,13 +17,13 @@ import org.springframework.web.servlet.HandlerInterceptor;
 @Component
 public class ApiAuthInterceptor implements HandlerInterceptor {
 
-
+    @SuppressWarnings("unused")
     @DubboReference //核心：告诉Dubbo这是一个服务引用，远程调用 InnerUserService 的方法
     private InnerUserService innerUserService;
 
 
     @Override
-    public boolean preHandle(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull Object handler) throws Exception{
+    public boolean preHandle(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull Object handler) {
 //        1.从请求头中扒取调用方带过来的凭证
         String accessKey = request.getHeader("accessKey");
         String nonce = request.getHeader("nonce");
