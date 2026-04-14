@@ -12,13 +12,13 @@ public class SignUtils {
      * 生成API调用签名
      *
      * @param body 请求体内容（或者请求参数）
-     * @param secreKey 用户的私钥
+     * @param secretKey 用户的私钥
      * @return 经过MD5加密的签名字符串
      */
-    public static String genSign(String body,String secreKey){
+    public static String genSign(String body,String secretKey){
 
 //        防止明文拼接被破解，可以在body和secretKey之间加入一个固定的分隔符，增加破解难度
-        String content = body+ "." + secreKey;
+        String content = body+ "." + secretKey;
 
         return DigestUtils.md5DigestAsHex(content.getBytes(StandardCharsets.UTF_8));
 //            TODO:一般还会把随机数（Nonce）和时间戳（Timestamp）加入签名拼接中，以此防范“重放攻击，
