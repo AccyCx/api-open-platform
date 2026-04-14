@@ -89,7 +89,6 @@
 			<artifactId>dubbo-spring-boot-starter</artifactId>
 		</dependency>
 	</dependencies>
-
 	<build>
 		<plugins>
 			<plugin>
