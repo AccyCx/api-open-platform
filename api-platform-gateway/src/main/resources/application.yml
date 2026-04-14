@@ -1,0 +1,23 @@
+server:
+  port: 8090 # 网关占用独立的 8090 端口
+
+spring:
+  application:
+    name: api-platform-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+    gateway:
+      routes:
+        - id: api_route # 路由的 ID，随便起，保持唯一即可
+          # 当有人访问网关的 /api/** 路径时，网关会自动把请求转发给真实的 interface 服务 (8102)
+          uri: http://localhost:8102
+          predicates:
+            - Path=/api/**
+
+dubbo:
+  application:
+    name: api-platform-gateway
+  registry:
+    address: nacos://localhost:8848
