@@ -53,7 +53,7 @@ public class ApiClient {
 //        Hutool的HttpUtil可以简化HTTP请求的发送
         HashMap<String,Object> paramMap = new HashMap<>();
         paramMap.put("name",name);
-        String result = HttpUtil.get("http://localhost:8102/name/get",paramMap);
+        String result = HttpUtil.get("http://localhost:8090/api/name/get",paramMap);
         System.out.println(result);
         return result;
     }
@@ -62,7 +62,7 @@ public class ApiClient {
     public String getNameByPost(String name){
         HashMap<String,Object> paramMap = new HashMap<>();
         paramMap.put("name",name);
-        String result = HttpUtil.post("http://localhost:8102/name/post",paramMap);
+        String result = HttpUtil.post("http://localhost:8090/api/name/post",paramMap);
         System.out.println(result);
         return result;
     }
@@ -73,7 +73,7 @@ public class ApiClient {
         String json = JSONUtil.toJsonStr(user);
 
 //        发送带请求头的HTTP请求
-        HttpResponse httpResponse = HttpRequest.post("http://localhost:8102/name/user")
+        HttpResponse httpResponse = HttpRequest.post("http://localhost:8090/api/name/user")
                 .addHeaders(getHeaderMap(json)) //关键：把算好的签名头放进去
                 .body(json) //塞入请求体
                 .execute();
