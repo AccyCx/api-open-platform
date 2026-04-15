@@ -15,9 +15,11 @@ spring:
           uri: http://localhost:8102
           predicates:
             - Path=/api/**
-
+          filters:
+            - StripPrefix=1 # 去掉路径中的 /api 前缀，转发给后端服务
 dubbo:
   application:
     name: api-platform-gateway
   registry:
     address: nacos://localhost:8848
+
