@@ -1,7 +1,10 @@
 package com.accycx.gateway.filter;
 
+import com.accycx.common.service.InnerInterfaceInfoService;
+import com.accycx.common.service.InnerUserInterfaceInvoke;
 import com.accycx.common.service.InnerUserService;
 import com.accycx.common.utils.SignUtils;
+import com.accycx.model.entity.InterfaceInfo;
 import com.accycx.model.entity.User;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.dubbo.config.annotation.DubboReference;
@@ -10,6 +13,7 @@ import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
@@ -26,6 +30,14 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
     @DubboReference(check = false)
     @SuppressWarnings("unused")
     private InnerUserService innerUserService;
+
+    @DubboReference(check = false)
+    @SuppressWarnings("unused")
+    private InnerUserInterfaceInvoke innerUserInterfaceInvoke;
+
+    @DubboReference(check = false)
+    @SuppressWarnings("unused")
+    private InnerInterfaceInfoService innerInterfaceInfoService;
 
 //    Mono<Void> 是 Reactor 框架中的一个类型，表示一个异步操作的结果，这个操作可能会完成（成功或失败），但不会返回任何数据（Void）。
     @Override
@@ -84,8 +96,25 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
             return handleNoAuth(response);
         }
 
-//        4.鉴权通过，放行请求
-        return chain.filter(exchange);
+//        4.鉴权通过，放行请求，并绑定一个回调函数，在响应成功后调用统计次数的RPC接口
+//          动态获取当前请求的接口信息
+        String path = request.getPath().value().replace("/api",""); //去掉/api前缀，得到真正的接口路径
+        String method = request.getMethod().name();
+
+//        这里调用RPC查库
+        InterfaceInfo interfaceInfo = innerInterfaceInfoService.getInterfaceInfo(path, method);
+        if(interfaceInfo == null){
+//            找不到接口，说明这是非法路径或未收录接口
+            return handleNoAuth(response);
+        }
+
+//        拿到真实ID和用户ID
+        long interfaceInfoId = interfaceInfo.getId();
+        long userId = invokeUser.getId();
+
+//        发起异步的网关转发并处理结果
+        return handleResponse(exchange, chain, interfaceInfoId, userId);
+//        return chain.filter(exchange);
 
     }
 
@@ -100,5 +129,43 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
     public int getOrder() {
 //        返回-1保证这个过滤器拥有最高优先级，最先执行
         return -1;
+    }
+
+    /**
+     * 处理响应，在响应成功后调用统计次数的RPC接口
+     */
+    private Mono<Void> handleResponse(ServerWebExchange exchange,GatewayFilterChain chain,long interfaceInfoId,long userId){
+        try{
+            ServerHttpResponse originalResponse = exchange.getResponse();
+
+//            这是一段Gateway装饰器模式代码，用于拦截后端服务的响应
+//            这里不修改响应内容，只在响应完成后执行一个回调函数（Mono.fromRunnable），在这个回调函数里可以获取到响应的状态码等信息，进行统计或日志记录等操作
+            return chain.filter(exchange).then(Mono.fromRunnable(()->{
+                HttpStatusCode statusCode = originalResponse.getStatusCode();
+                if(statusCode != null && statusCode.is2xxSuccessful()){
+//                    如果后端接口返回了200，说明调用成功了，然后可以调用RPC接口来统计用户的调用次数
+                    try {
+                        // 1. 接住返回值
+                        boolean invokeResult = innerUserInterfaceInvoke.invokeCount(interfaceInfoId, userId);
+
+                        // 2. 判断是否扣减成功
+                        if (!invokeResult) {
+                            log.error("致命错误：接口调用成功，但扣减调用次数失败！接口ID: {}, 用户ID: {}", interfaceInfoId, userId);
+                            // 这里可以配合未来的报警系统（比如发钉钉/企业微信机器人报警）
+                        } else {
+                            log.info("扣减调用次数成功。接口ID: {}, 用户ID: {}", interfaceInfoId, userId);
+                        }
+                    } catch (Exception e) {
+                        log.error("invokeCount RPC调用出现异常", e);
+                    }
+                }else{
+//                    接口报错了，做一些报警或日志记录
+                    log.error("调用接口失败，状态码：{}", statusCode);
+                }
+            }));
+        }catch(Exception e){
+            log.error("网关处理异常",e);
+            return exchange.getResponse().setComplete();
+        }
     }
 }
