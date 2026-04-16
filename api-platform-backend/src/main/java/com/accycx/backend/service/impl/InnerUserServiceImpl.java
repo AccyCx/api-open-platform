@@ -8,6 +8,7 @@ import jakarta.annotation.Resource;
 import org.apache.dubbo.config.annotation.DubboService;
 
 @DubboService //核心：告诉Dubbo这是一个服务实现类，提供给其他微服务调用
+@SuppressWarnings("unused")
 public class InnerUserServiceImpl implements InnerUserService {
 
     @Resource
