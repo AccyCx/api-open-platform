@@ -2128,6 +2128,10 @@ public class ApiPlatformBackendApplication {
 
 **2.启动 Backend**：查看 `Nacos` 控制台的“服务列表”，如果出现了 `api-platform-backend`，说明电话接通了。
 
+如图：
+
+![nacos列表显示](https://bu.dusays.com/2026/04/15/69df7eadb5bc1.png)
+
 **3.启动 Interface**。
 
 **4.运行之前的 SDK 测试用例**：如果控制台依然返回成功，说明这一通“跨服务内线电话”打通了！
@@ -2160,3 +2164,577 @@ public class ApiPlatformBackendApplication {
 
 **4.路由 转发**：网关验证无误后，把请求平滑地送到 `interface`。
 
+# 阶段四：网关与中间件（高并发攻坚）
+
+本章是阶段四的上半部分，主要包括网关的搭建以及前面一些遗留下来的业务逻辑需要处理，还包括前端页面的展示。
+
+# 网关（Gateway）
+
+**Spring Cloud Gateway 的底层使用的是响应式编程（`WebFlux` + `Netty`），而不是我们之前一直用的 Spring MVC（Tomcat）。** 这意味着，在网关模块里，**绝对不能引入 `spring-boot-starter-web` 依赖**，否则项目启动会直接报错冲突！
+
+## 配置网关类
+
+1. `pom.xml` (网关依赖)
+
+```xml
+<dependencies>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.apache.dubbo</groupId>
+            <artifactId>dubbo-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.accycx</groupId>
+            <artifactId>api-platform-common</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+    </dependencies>
+```
+
+### 2. `application.yml`
+
+用来配置网关的端口、`Nacos` 注册以及核心的**路由转发规则**。
+
+```yaml
+server:
+  port: 8090 # 网关占用独立的 8090 端口
+
+spring:
+  application:
+    name: api-platform-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+    gateway:
+      routes:
+        - id: api_route # 路由的 ID，随便起，保持唯一即可
+          # 当有人访问网关的 /api/** 路径时，网关会自动把请求转发给真实的 interface 服务 (8102)
+          uri: http://localhost:8102
+          predicates:
+            - Path=/api/**
+          filters:
+            - StripPrefix=1 # 去掉路径中的 /api 前缀，转发给后端服务
+dubbo:
+  application:
+    name: api-platform-gateway
+  registry:
+    address: nacos://localhost:8848
+
+```
+
+### 3. 创建网关启动类 
+
+在 `src/main/java/com/accycx/gateway` 下新建 `ApiGatewayApplication.java`：
+
+```java
+//网关不需要连接数据库，所以排除数据库自动配置，防止报错
+@SpringBootApplication(exclude = {DataSourceAutoConfiguration.class})
+@EnableDubbo
+public class ApiGatewayApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ApiGatewayApplication.class, args);
+    }
+}
+
+```
+
+4. `CustomGlobalFilter.java` (全局鉴权拦截器)
+
+在 `filter` 包下新建这个类：
+
+```java
+@Slf4j
+@Component
+public class CustomGlobalFilter implements GlobalFilter, Ordered {
+
+// 远程调用主后台获取用户信息
+    @DubboReference(check = false)
+    private InnerUserService innerUserService;
+
+//Mono<Void> 是 Reactor 框架中的一个类型，表示一个异步操作的结果，这个操作可能会完成（成功或失败），但不会返回任何数据（Void）。
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        ServerHttpRequest request = exchange.getRequest();
+        ServerHttpResponse response = exchange.getResponse();
+
+// 1. 打印请求日志
+        log.info("请求唯一标识：" + request.getId());
+        
+//request.getPath() 返回的是一个 RequestPath 对象。这个对象里包含了很多解析好的路径信息，比如按 / 分割的各个部分。如果直接打印它，底层会调用 toString()。
+//request.getPath().value() 则是直接把完整的路径提取成一个纯粹的 String 字符串（比如 "/api/user/login"）。在写日志时，我们通常只需要纯字符串。
+        log.info("请求路径：" + request.getPath().value());
+        
+//request.getLocalAddress() 返回的是一个 InetSocketAddress 对象，里面包含了 IP 地址、端口号，甚至还有未解析的主机名。
+//request.getLocalAddress().getHostString() 则是干净利落地只提取出 IP 地址字符串（比如 "192.168.1.100"），且它不会触发耗时的 DNS 反向解析，性能更好，写进日志也更清晰。
+        log.info("请求来源地址：" + request.getLocalAddress().getHostString());
+
+        // 2. 扒取请求头（核心鉴权部分）
+        HttpHeaders headers = request.getHeaders();
+        String accessKey = headers.getFirst("accessKey");
+        String nonce = headers.getFirst("nonce");
+        String timestamp = headers.getFirst("timestamp");
+        String sign = headers.getFirst("sign");
+        String body = headers.getFirst("body"); 
+
+        // 3. 校验逻辑 (防伪造、防重放、防过期)
+        if (accessKey == null) {
+            return handleNoAuth(response);
+        }
+
+        User invokeUser = innerUserService.getInvokeUser(accessKey);
+        if (invokeUser == null) {
+            return handleNoAuth(response);
+        }
+
+        if (nonce == null || nonce.length() < 4) {
+            return handleNoAuth(response);
+        }
+
+        long currentTime = System.currentTimeMillis() / 1000;
+        final long FIVE_MINUTES = 5 * 60;
+        if (timestamp == null || (currentTime - Long.parseLong(timestamp)) >= FIVE_MINUTES) {
+            return handleNoAuth(response);
+        }
+
+        String secretKey = invokeUser.getSecretKey();
+        String serverSign = SignUtils.genSign(body, secretKey);
+        if (sign == null || !sign.equals(serverSign)) {
+            return handleNoAuth(response);
+        }
+
+        // 4. 鉴权通过，放行请求！
+        return chain.filter(exchange);
+    }
+
+    /**
+     * 拦截并返回 403 无权限错误
+     */
+    private Mono<Void> handleNoAuth(ServerHttpResponse response) {
+        response.setStatusCode(HttpStatus.FORBIDDEN);
+        return response.setComplete();
+    }
+
+    @Override
+    public int getOrder() {
+        // 返回 -1 保证这个过滤器拥有最高优先级，最先执行
+        return -1;
+    }
+}
+```
+
+网关配置好之后，**必须去 `interface` 模块，把之前写的 `ApiAuthInterceptor`（拦截器）和 `MvcConfig` 删掉** 如果网关拦截一次，接口服务又拦截一次，会导致请求卡死或抛出异常。
+
+## 简单测试
+
+### 测试网关的“拦截”
+
+现在全面启动项目，测试网关的拦截能力，按照下面顺序启动：
+
+**1.Nacos (注册中心)**：确保 `localhost:8848/nacos` 正在运行。
+
+**2.API 平台主后台 (Backend)**：点击 `api-platform-backend` 模块的启动类。确保它已成功注册到 `Nacos`。
+
+**3.模拟的第三方接口 (Interface)**：点击 `api-platform-interface` 模块的启动类（注意：它现在是一个没有任何安检的“裸体”服务，跑在 `8102` 端口）。
+
+**4.统一 API 网关 (Gateway)**：点击我们刚刚新建的 `api-platform-gateway` 模块的启动类 `ApiGatewayApplication`（它跑在 `8090` 端口）。
+
+然后现在可以直接访问网关的地址，并且故意不带任何签名信息，因为我们配置的路由规则是匹配`/api/**`，所以要这样访问：
+
+http://localhost:8090/api/name/get?name=Test
+
+预期结果：页面会返回一个**403 Forbidden** 状态码，并且看看 Gateway 的控制台日志，会显示打印的请求信息，并在验证头信息（`accessKey == null`）时被果断拦截了。
+
+### 测试网关的“放行与路由”
+
+这是最核心的一步：通过 SDK，带着合法的签名，向网关发起请求，看网关能不能把它正确地路由给隐藏在后面的 `8102` 服务。
+
+**注意!** 之前我们测试 SDK，请求的地址是直接写死的接口地址（`8102`）。现在我们要通过网关，所以请求地址必须改成网关的地址（`8090`）加上路由前缀（`/api`）。
+
+打开之前写的 **SDK 模块 (`api-platform-client-sdk`)**，找到 `ApiClient.java`。
+
+把里面请求的 URL 地址**全部替换**为通过网关的地址：
+
+```java
+// 1. 调用 GET 接口
+    public String getNameByGet(String name) {
+        HashMap<String, Object> paramMap = new HashMap<>();
+        paramMap.put("name", name);
+        // 注意：这里改成了访问网关 (8090)，并加上了 /api 前缀
+        String result = HttpUtil.get("http://localhost:8090/api/name/get", paramMap);
+        System.out.println(result);
+        return result;
+    }
+
+    // 2. 调用 POST URL 传参接口
+    public String getNameByPost(String name) {
+        HashMap<String, Object> paramMap = new HashMap<>();
+        paramMap.put("name", name);
+        // 注意：访问网关
+        String result = HttpUtil.post("http://localhost:8090/api/name/post", paramMap);
+        System.out.println(result);
+        return result;
+    }
+
+    // 3. 调用最核心的 POST JSON 接口
+    public String getUserNameByPost(User user) {
+        String json = JSONUtil.toJsonStr(user);
+        // 注意：访问网关
+        HttpResponse httpResponse = HttpRequest.post("http://localhost:8090/api/name/user")
+                .addHeaders(getHeaderMap(json))
+                .body(json)
+                .execute();
+        System.out.println(httpResponse.getStatus());
+        String result = httpResponse.body();
+        System.out.println(result);
+        return result;
+    }
+```
+
+**注意：修改完 SDK 后，必须要在 Maven 面板里重新双击 `clean` 和 `install`，把这个带有新地址的 jar 包安装到本地仓库！** 否则接下来的测试还是会去调老地址。
+
+重新打包好 SDK 后，打开 `api-platform-interface` 模块下的测试类 `ApiInterfaceApplicationTests.java`，会返回期望的结果：
+
+![测试结果](https://bu.dusays.com/2026/04/12/69dbb4e6e7e31.png)
+
+网关模块后台会打印日志：
+
+![日志](https://bu.dusays.com/2026/04/15/69df82ab9366a.png)
+
+到这里，这个复杂的跨进程链路就彻底跑通了：
+
+SDK（客户端）发起请求 -> 打向 Gateway（8090） -> Gateway 进行签名拦截 -> Gateway 通过 Dubbo RPC 去 Backend 查数据库比对签名 -> 签名一致，Gateway 放行 -> Gateway 根据路由规则，将请求转发给 Interface（8102） -> Interface 执行业务逻辑并原路返回
+
+## 接口调用次数统计
+
+我们要实现这样的业务闭环：当用户成功调用一次 `/name/user` 接口后，系统会自动在数据库里扣除他该接口的 1 次调用配额，并把总调用次数加 1。
+
+**架构思考：这段代码应该写在哪里？**
+
+1. **写在 `Interface` 模块？** 不行，第三方接口服务只负责干活（比如返回天气），它不应该、也没有权限去管“平台扣费”这种核心业务。
+2. **写在网关 `Gateway` 模块？** 也不行，网关应该尽可能轻量，只做路由和拦截。如果在网关里写长篇大论的数据库操作，会严重拖慢网关的并发性能。
+3. **正确答案：写在 `Backend` 模块，由网关通过 RPC 异步调用**
+
+接下来，我们要实现这一功能。
+
+### 第一步：在 `Common` 模块建立契约 (RPC 接口)
+
+要在网关和 `Backend` 之间打通一条新的“内线电话”，用于统计次数。
+
+打开 **`api-platform-common`** 模块的 `src/main/java/com/accycx/common/service` 目录，新建 `InnerUserInterfaceInvoke.java`：
+
+```java
+/**
+ * 内部用户接口信息服务（专门用于网关RPC调用）
+ */
+public interface InnerUserInterfaceInvoke {
+
+    /**
+     * 接口调用次数+1，剩余配额-1
+     *
+     * @param interfaceInfoId 被调用的接口ID
+     * @param userId          发起调用的用户ID
+     * @return 是否统计成功
+     */
+    boolean invokeCount(long interfaceInfoId, long userId);
+}
+
+```
+
+### 第二步：在 `Backend` 模块实现契约并暴露服务
+
+打开 **`api-platform-backend`** 模块的 `src/main/java/com/accycx/backend/service/impl` 目录，新建 `InnerUserInterfaceInvokeImpl.java`：
+
+```java
+@DubboService
+@SuppressWarnings("unused")
+public class InnerUserInterfaceInvokeImpl implements InnerUserInterfaceInvoke {
+
+    @Resource
+    private UserInterfaceInvokeService userInterfaceInvokeService;
+
+    @Override
+    public boolean invokeCount(long interfaceInfoId,long userId){
+//       检验参数合法性
+        if(interfaceInfoId <= 0 || userId <= 0){
+            return false;
+        }
+
+//        用UserInterfaceInvoke实体类更新
+
+        UpdateWrapper<UserInterfaceInvoke> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.eq("interface_info_id",interfaceInfoId);
+        updateWrapper.eq("user_id",userId);
+        updateWrapper.gt("left_num",0); //必须有剩余次数点才能扣除
+
+//         子操作，防并发超卖
+        updateWrapper.setSql("left_num = left_num - 1, total_num = total_num + 1");
+
+        return userInterfaceInvokeService.update(updateWrapper);
+    }
+}
+
+```
+
+这里用到了`UserInterfaceInvokeService`，但是之前并没有写过，只创建了`UserInterfaceInvoke`的entity，这一套（`Mapper`、`Service`、`ServiceImpl`）将在下一步实现，并把代码贴出来。
+
+### 第三步：在 `Gateway` 网关模块发起 RPC 调用
+
+这是最关键的一步。我们不能在网关**转发请求之前**扣费，万一接口服务挂了没返回结果，用户钱白扣了。必须在**网关收到接口服务的成功响应后**再扣费。
+
+在实现这步之前，先把`UserInterfaceInvoke`这一套流程创建好
+
+#### 完成`UserInterfaceInvoke`流程
+
+**（1）新建 Mapper接口**
+
+在 `api-platform-backend` 模块的 `mapper` 包下新建 `UserInterfaceInvokeMapper.java`：
+
+```java
+/**
+ * 用户接口调用表 Mapper接口
+ */
+@Mapper
+public interface UserInterfaceInvokeMapper extends BaseMapper<UserInterfaceInvoke> {
+}
+
+```
+
+**（2）新建 Service 接口**
+
+在 `service` 包下新建 `UserInterfaceInvokeService.java`：
+
+```java
+/**
+ * 用户接口调用服务接口
+ */
+public interface UserInterfaceInvokeService extends IService<UserInterfaceInvoke> {
+}
+
+```
+
+**（3）实现 Service 接口**
+
+在 `service/impl` 包下新建 `UserInterfaceInvokeServiceImpl.java`：
+
+```java
+/**
+ * 用户接口调用服务实现类
+ */
+@Service
+public class UserInterfaceInvokeServiceImpl extends ServiceImpl<UserInterfaceInvokeMapper,UserInterfaceInvoke> implements UserInterfaceInvokeService{
+}
+
+```
+
+为什么要把 `UserInterfaceInvokeServiceImpl`和`InnerUserInterfaceInvokeImpl`分开来写？
+
+有人会觉得，就在`UserInterfaceInvokeServiceImpl`类上同时加上`@DubboService`和`@Service`就行了，这样确实能跑通，但是同时也会带来很大的风险！
+
+加上`@DubboService`意味着把这个业务类的接口全都暴露给其它微服务模块了，也就相当于这个业务类继承的`Mybat-Plus`里的底层接口也会暴露出去，例如`save()`,`update()`等方法，如果微服务其它模块被黑客入侵，那么他就可以直接用这些底层接口方法直接去操作你的数据库，及其不安全，所以要分开来写，只把必要的接口暴露出去。
+
+接下来就在`Gateway`网关模块发起RPC调用
+
+打开 **`api-platform-gateway`** 模块里的 `CustomGlobalFilter.java`
+
+1. **在类顶部引入刚刚写的 RPC 接口：**
+
+```java
+@DubboReference(check = false)
+    private InnerUserInterfaceInfoService innerUserInterfaceInfoService;
+    
+    // 之前引入的 innerUserService 应该也在这里
+```
+
+2. **找到 `// 4. 鉴权通过，放行请求！` 这行代码，把它替换成下面的响应式处理逻辑：**
+
+```java
+// 4. 鉴权通过，放行请求，并绑定一个“响应后置拦截器”
+            // 注意：不要直接 return chain.filter(exchange); 了
+            
+            // 假设我们已经查到了正在被调用的 interfaceInfoId（比如 ID 是 1）
+            // 这里需要通过 innerInterfaceInfoService 从数据库里动态查出来，等会儿会实现这一步
+            long interfaceInfoId = 1L; 
+            
+            // 发起异步的网关转发并处理结果
+            return handleResponse(exchange, chain, interfaceInfoId, invokeUser.getId());
+```
+
+3. **在 `CustomGlobalFilter` 类的最下方，加入这个处理响应的方法：**
+
+```java
+/**
+     * 处理响应，在响应成功后调用统计次数的RPC接口
+     */
+    private Mono<Void> handleResponse(ServerWebExchange exchange,GatewayFilterChain chain,long interfaceInfoId,long userId){
+        try{
+            ServerHttpResponse originalResponse = exchange.getResponse();
+
+//            这是一段Gateway装饰器模式代码，用于拦截后端服务的响应
+//            这里不修改响应内容，只在响应完成后执行一个回调函数（Mono.fromRunnable），在这个回调函数里可以获取到响应的状态码等信息，进行统计或日志记录等操作
+            return chain.filter(exchange).then(Mono.fromRunnable(()->{
+                HttpStatusCode statusCode = originalResponse.getStatusCode();
+                if(statusCode != null && statusCode.is2xxSuccessful()){
+//                    如果后端接口返回了200，说明调用成功了，然后可以调用RPC接口来统计用户的调用次数
+                    try {
+                        // 1. 接住返回值
+                        boolean invokeResult = innerUserInterfaceInvoke.invokeCount(interfaceInfoId, userId);
+
+                        // 2. 判断是否扣减成功
+                        if (!invokeResult) {
+                            log.error("致命错误：接口调用成功，但扣减调用次数失败！接口ID: {}, 用户ID: {}", interfaceInfoId, userId);
+                            // 这里可以配合未来的报警系统（比如发钉钉/企业微信机器人报警）
+                        } else {
+                            log.info("扣减调用次数成功。接口ID: {}, 用户ID: {}", interfaceInfoId, userId);
+                        }
+                    } catch (Exception e) {
+                        log.error("invokeCount RPC调用出现异常", e);
+                    }
+                }else{
+//                    接口报错了，做一些报警或日志记录
+                    log.error("调用接口失败，状态码：{}", statusCode);
+                }
+            }));
+        }catch(Exception e){
+            log.error("网关处理异常",e);
+            return exchange.getResponse().setComplete();
+        }
+    }
+}
+```
+
+这段代码其实在同步和异步上有问题：
+
+网关基于 `WebFlux`，它的核心思想是**非阻塞**。`chain.filter(exchange).then(Mono.fromRunnable(...))` 这个回调函数是运行在 `Netty` 的非阻塞线程（`EventLoop`）中的。 而 `innerUserInterfaceInvoke.invokeCount(...)` 是一个**同步阻塞的 Dubbo RPC 调用**。
+
+如果我们在非阻塞的线程里执行一个可能耗时几百毫秒的同步网络请求，会导致网关的线程被卡住，吞吐量断崖式下跌，甚至直接抛出 `block() is not allowed` 类似的异常。
+
+并发问题：
+
+假设用户小明**只剩下最后 1 次**调用额度（`leftNum = 1`），他写了一个并发脚本，**在同一微秒内，向网关发起了 2 个完全一样的请求（请求 A 和请求 B）**。
+
+在极高并发下，A 和 B 几乎是同时刻并排冲进网关的：
+
+- **步骤 1：A 和 B 同时到达网关安检。** 网关同时去查数据库，发现小明剩余次数都是 1，于是**同时放行了 A 和 B**。（因为此时没有任何一个请求走到了最终扣费那一步）。
+- **步骤 2：A 和 B 同时调用第三方接口。** 两个接口都调用成功了（因为第三方不管你剩多少次，它只负责干活）。
+- **步骤 3：A 和 B 同时走到 `invokeCount` 准备扣费。**
+  - 请求 A 执行 `updateWrapper.gt("leftNum", 0)`，发现当前是 1，符合条件，扣减成功！小明次数变成 0。返回 `true`。
+  - **紧接着，请求 B 也来执行 `updateWrapper.gt("leftNum", 0)`。** 但此时数据库里的 `leftNum` 刚刚已经被 A 变成了 0。因为条件不成立（0 不大于 0），`MyBatis-Plus` 没有更新任何数据，**返回 `false`**。
+
+结果是：第三方接口被调用了 **2 次**，但小明的账户里只被扣了 **1 次**，这就是典型的“白嫖”！！！
+
+所以后续这部分会用Redis来处理
+
+### 在网关模块动态查询接口ID
+
+#### 第一步：在 Backend 模块实现 RPC 契约
+
+之前我们在 `common` 模块定义了 `InnerInterfaceInfoService` 接口，现在我们要去 **`api-platform-backend`** 模块把它给实现了。
+
+在 `service/impl` 包下新建 `InnerInterfaceInfoServiceImpl.java`：
+
+```java
+@DubboService
+@SuppressWarnings("unused")
+public class InnerInterfaceInfoServiceImpl implements InnerInterfaceInfoService {
+
+    @Resource
+    private InterfaceInfoMapper interfaceInfoMapper;
+
+    @Override
+    public InterfaceInfo getInterfaceInfo(String path,String method){
+        if(StringUtils.isAnyBlank(path,method)){
+            return null;
+        }
+//        根据URL和请求方法 唯一确定一个接口
+        QueryWrapper<InterfaceInfo> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("url",path);
+        queryWrapper.eq("method",method);
+        return interfaceInfoMapper.selectOne(queryWrapper);
+    }
+
+}
+
+```
+
+#### 第二步：在 Gateway 中实现动态查询
+
+现在我们要重构 **`api-platform-gateway`** 里的 `CustomGlobalFilter`。我们需要把原来写死的 `1L` 替换成从数据库查询的结果。
+
+**1. 注入 RPC 服务**
+
+在 `CustomGlobalFilter` 类顶部新增：
+
+```java
+    @DubboReference(check = false)
+    @SuppressWarnings("unused")
+    private InnerInterfaceInfoService innerInterfaceInfoService;
+```
+
+### 2. 修改 filter 核心逻辑
+
+找到之前 `// 4. 鉴权通过` 的位置，修改如下：
+
+```java
+
+//        4.鉴权通过，放行请求，并绑定一个回调函数，在响应成功后调用统计次数的RPC接口
+//          动态获取当前请求的接口信息
+        String path = request.getPath().value().replace("/api",""); //去掉/api前缀，得到真正的接口路径
+        String method = request.getMethod().name();
+
+//        这里调用RPC查库
+        InterfaceInfo interfaceInfo = innerInterfaceInfoService.getInterfaceInfo(path, method);
+        if(interfaceInfo == null){
+//            找不到接口，说明这是非法路径或未收录接口
+            return handleNoAuth(response);
+        }
+
+//        拿到真实ID和用户ID
+        long interfaceInfoId = interfaceInfo.getId();
+        long userId = invokeUser.getId();
+
+//        发起异步的网关转发并处理结果
+        return handleResponse(exchange, chain, interfaceInfoId, userId);
+//        return chain.filter(exchange);
+
+```
+
+现在的闭环链路：
+
+1. **SDK** 向网关发请求。
+2. **网关** 通过 `InnerUserService` 拿到 **SK** 完成验签。
+3. **网关** 通过 `InnerInterfaceInfoService` 拿到该请求对应的 **接口 ID**。
+4. **网关** 转发给真实服务。
+5. **网关** 收到成功响应，通过 `InnerUserInterfaceInfoService` 给该 **用户ID + 接口ID** 的组合扣费。
+
+但是：现在的网关每进一个请求都要打两次 RPC 到后台查库（一次查人，一次查接口），这在并发量大的时候会拖慢响应速度，后面会通过Redis缓存优化网关的查询性能。
+
+现在重新启动整个项目，再用之前的测试类验证流程（注意，在测试前数据库需要用一条用户和接口的调用的关系的数据，并且用户id要对应测试类里的用户名，接口id对应测试类里的接口，调用配额要为有效数字）。
+
+这次通过`Gateway`后台可以看到：
+
+![日志打结果](https://bu.dusays.com/2026/04/15/69df906c41d6a.png)
+
+然后去观察数据库里的变化，会发现总调用次数+1，剩余配额-1。
+
+到现在这个项目的核心计费与鉴权大动脉已经彻底贯通，这标志着后端的核心架构（接口提供、SDK 封装、微服务治理、网关统一拦截、RPC 通信计费）已经基本成型。
+
+现在我们要去写前端页面，让用户有一个真正的页面去：
+
+1. 浏览所有的接口列表。
+2. 注册账号并查看自己的 AK/SK。
+3. 在网页上点击“申请调用”，分配调用次数。
+4. 在网页上填参数，一键实现在线测试（也就是去触发我们之前在 `backend` 里写的那个 `/invoke` 接口）。
+
+在写前端的同时，还可以根据前端页面需要展示的东西去完善之前写过的接口，或者添加新的需要的接口。
+
+等前后端彻底打通后，就开始对项目进行性能优化，引入中间件解决一系列问题。
