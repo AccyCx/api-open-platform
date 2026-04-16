@@ -1,6 +1,4 @@
 package com.accycx.common.service;
-
-
 import com.accycx.model.entity.InterfaceInfo;
 
 /**
@@ -15,5 +13,5 @@ public interface InnerInterfaceInfoService {
      * @param method 请求方法
      * @return 如果找不到返回null
      */
-    InterfaceInfo getInterfaceinfo(String path, String method);
+    InterfaceInfo getInterfaceInfo(String path, String method);
 }
