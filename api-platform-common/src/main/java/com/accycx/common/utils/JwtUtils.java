@@ -34,6 +34,11 @@ public class JwtUtils {
                 .compact();
     }
 
+    /**
+     * 解析Token
+     * @param token 客户端传来的JWT字符串
+     * @return Claims 载荷对象，包含存放的用户信息
+     */
     public static Claims parseToken(String token) {
         try {
 //            使用parserBuilder设置密钥并解析token
