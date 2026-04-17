@@ -126,7 +126,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
 //        2.解析Token，获取用户ID（调用之前写的JwtUtils）
-        Long userId;
+        long userId;
         try{
             Claims claims = JwtUtils.parseToken(token);
             userId = claims.get("userId", Number.class).longValue();
