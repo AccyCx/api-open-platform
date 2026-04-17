@@ -1,9 +1,11 @@
 package com.accycx.common.utils;
 
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys; // 必须导入这个 Keys
-
+import io.jsonwebtoken.ExpiredJwtException; // 用于捕获过期异常
+import io.jsonwebtoken.MalformedJwtException; // 用于捕获格式异常
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Date;
@@ -30,5 +32,25 @@ public class JwtUtils {
                 .setExpiration(new Date(System.currentTimeMillis() + EXPIRE_TIME))
                 .signWith(KEY, SignatureAlgorithm.HS512)
                 .compact();
+    }
+
+    public static Claims parseToken(String token) {
+        try {
+//            使用parserBuilder设置密钥并解析token
+            return Jwts.parserBuilder()
+                    .setSigningKey(KEY) //必须使用签发时的同一把钥匙，比对密钥
+                    .build()//准备就绪，构造解析器
+                    .parseClaimsJws(token)//解析token，如果token无效或过期会抛出异常
+                    .getBody(); //获取token中的payload部分，也就是我们之前放入的claims
+        } catch (ExpiredJwtException e) {
+//            如果Token已经过了EXPIRE_TIME，会抛出这个异常
+            throw new RuntimeException("Token已过期，请重新登录");
+        } catch (MalformedJwtException e) {
+//            如果Token被人篡改过，或者根本不是一个合法的JWT，会抛出这个异常
+            throw new RuntimeException("Token不合法或被篡改");
+        } catch (Exception e) {
+//            其他异常（如签名无效等）
+            throw new RuntimeException("Token解析失败");
+        }
     }
 }
