@@ -3,6 +3,7 @@ package com.accycx.backend.service;
 import com.accycx.model.entity.User;
 import com.accycx.model.vo.user.LoginUserVO;
 import com.baomidou.mybatisplus.extension.service.IService;
+import jakarta.servlet.http.HttpServletRequest;
 
 /**
  * 用户服务接口
@@ -27,4 +28,15 @@ public interface UserService extends IService<User> {
         * @return 登录成功的用户返回体
         */
         LoginUserVO userLogin(String userAccount, String userPassword);
+
+    /**
+     * 获取当前登录用户的信息
+     *
+     * @param request HTTP 请求对象
+     * @return 当前登录的用户信息，如果没有登录则返回 null
+     */
+    User getLoginUser(HttpServletRequest request);
+
 }
+
+

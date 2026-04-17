@@ -10,9 +10,10 @@ import com.accycx.model.entity.User;
 import com.accycx.model.vo.user.LoginUserVO;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import io.jsonwebtoken.Claims;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 
@@ -108,5 +109,37 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         return loginUserVO;
 
+    }
+
+//    获取当前登录用户的信息
+    @Override
+    public User getLoginUser(HttpServletRequest request){
+
+//        1.从请求头获取Token（前端放在Authorization字段或token字段）
+        String token = request.getHeader("Authorization");
+        if(StringUtils.isBlank(token)){
+//            兼容前端可能放在token字段里
+            token = request.getHeader("token");
+        }
+        if(StringUtils.isBlank(token)){
+            throw new RuntimeException("未登录：Token为空");
+        }
+
+//        2.解析Token，获取用户ID（调用之前写的JwtUtils）
+        Long userId;
+        try{
+            Claims claims = JwtUtils.parseToken(token);
+            userId = claims.get("userId", Number.class).longValue();
+        } catch (Exception e) {
+            throw new RuntimeException("未登录：Token不合法或已过期");
+        }
+
+//        3.从数据库查询最新信息，确保AK/SK等敏感信息是最新的（如果用户被管理员禁用或删除了，这里也能查不到，保证安全性）
+        User currentUser = this.getById(userId);
+        if(currentUser == null){
+            throw new RuntimeException("用户不存在");
+        }
+
+        return currentUser;
     }
 }
