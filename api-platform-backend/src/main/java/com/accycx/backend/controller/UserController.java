@@ -2,29 +2,29 @@ package com.accycx.backend.controller;
 
 import com.accycx.backend.service.UserService;
 import com.accycx.common.BaseResponse;
-import com.accycx.common.ErrorCode;
+import com.accycx.common.enums.ErrorCode;
 import com.accycx.common.utils.ResultUtils;
 import com.accycx.model.dto.user.UserLoginRequest;
 import com.accycx.model.dto.user.UserRegisterRequest;
+import com.accycx.model.entity.User;
 import com.accycx.model.vo.user.LoginUserVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.BeanUtils;
+import org.springframework.web.bind.annotation.*;
 
 /**
  * 用户接口
  */
-@RestController  //标注这是一个 RESTful 控制器，返回 JSON 数据
+@RestController  //标注这是一个 RESTFul 控制器，返回 JSON 数据
 @RequestMapping("/user") //接口基础路径
 @Tag(name = "用户接口", description = "用户的注册、登录与管理")
 public class UserController {
 
-    @Autowired
+    @Resource
     private UserService userService;
 
     /**
@@ -85,6 +85,20 @@ public class UserController {
 
 //       获取包含Token的完整登录信息
         LoginUserVO loginUserVO = userService.userLogin(userAccount, userPassword);
+
+        return ResultUtils.success(loginUserVO);
+    }
+
+    /**
+     * 获取当前登录用户信息
+     */
+    @GetMapping("/current")
+    @Operation(summary="获取当前登录用户信息")
+    public BaseResponse<LoginUserVO> getLoginUser(HttpServletRequest request){
+        User user = userService.getLoginUser(request);
+
+        LoginUserVO loginUserVO = new LoginUserVO();
+        BeanUtils.copyProperties(user,loginUserVO);
 
         return ResultUtils.success(loginUserVO);
     }
