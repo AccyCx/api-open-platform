@@ -14,6 +14,7 @@ import io.jsonwebtoken.Claims;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 
 
@@ -101,10 +102,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         String token = JwtUtils.generateToken(user.getId(),user.getUserAccount());
 
 //        5.封装返回脱敏数据（VO）
+
         LoginUserVO loginUserVO = new LoginUserVO();
-        loginUserVO.setId(user.getId());
-        loginUserVO.setUserAccount(user.getUserAccount());
-        loginUserVO.setUserRole(user.getUserRole());
+        BeanUtils.copyProperties(user, loginUserVO);
         loginUserVO.setToken(token);
 
         return loginUserVO;
