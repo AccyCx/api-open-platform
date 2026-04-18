@@ -22,6 +22,12 @@ public class JwtUtils {
     // 将字符串秘钥转换成安全规范的Key对象
     private static final Key KEY = Keys.hmacShaKeyFor(SECRET_KEY.getBytes(StandardCharsets.UTF_8));
 
+    /**
+     * 生成Token
+     * @param userId 用户ID
+     * @param userAccount 用户账号
+     * @return 生成的JWT字符串，包含用户信息和过期时间
+     */
     public static String generateToken(Long userId, String userAccount){
         Map<String,Object> claims = new HashMap<>();
         claims.put("userId", userId);
