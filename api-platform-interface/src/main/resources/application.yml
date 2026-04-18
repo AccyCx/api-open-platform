@@ -3,8 +3,8 @@ server:
 
 api:
   client:
-    access-key: 512bb9f11e5d4a99be54e560ba8c5595
-    secret-key: ce013ef728099f1c5a4c2102e46c40b2
+    access-key: 94fb2efd037348139b281b67afe41c6b
+    secret-key: a6bad40168da9781342522df8085c935
 
 dubbo:
   application:

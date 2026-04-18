@@ -19,7 +19,7 @@ class ApiPlatformInterfaceApplicationTests {
     void contextLoads() {
         // 1. 准备参数
         User user = new User();
-        user.setUsername("accycx");
+        user.setUsername("test");
 
         // 2. 一行代码，直接调用！SDK 在底层会自动算好签名、拼好请求头并发送。
         String result = apiClient.getUserNameByPost(user);
