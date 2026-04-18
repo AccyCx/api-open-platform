@@ -1,19 +1,18 @@
 package com.accycx.apiclientsdk.client;
 
-import cn.hutool.core.util.RandomUtil;
+
 import cn.hutool.http.HttpRequest;
 import cn.hutool.http.HttpResponse;
 import cn.hutool.http.HttpUtil;
 import cn.hutool.json.JSONUtil;
-import com.accycx.apiclientsdk.utils.SignUtils;
+import com.accycx.apiclientsdk.utils.AuthUtils;
 import com.accycx.apiclientsdk.model.User;
-
 import java.util.HashMap;
-import java.util.Map;
 
 /**
  * 调用第三方接口的客户端类
  */
+
 public class ApiClient {
 
     private final String accessKey;
@@ -25,28 +24,7 @@ public class ApiClient {
         this.secretKey = secretKey;
     }
 
-    /**
-     * 核心逻辑：组装请求头
-     * 把凭证全部放在Header里
-     */
-    private Map<String,String> getHeaderMap(String body){
-        Map<String,String> hashMap = new HashMap<>();
-        hashMap.put("accessKey",accessKey);
 
-//       生成随机数（防重放）
-        hashMap.put("nonce", RandomUtil.randomNumbers(4));
-
-//        生成当前时间戳（防过期）
-        hashMap.put("timestamp",String.valueOf(System.currentTimeMillis() / 1000));
-
-//        将请求体参与签名计算
-        hashMap.put("body",body);
-
-//        生成签名
-        hashMap.put("sign", SignUtils.genSign(body,secretKey));
-
-        return hashMap;
-    }
 
     //    1.调用GET接口
     public String getNameByGet(String name){
@@ -73,15 +51,17 @@ public class ApiClient {
         String json = JSONUtil.toJsonStr(user);
 
 //        发送带请求头的HTTP请求
-        HttpResponse httpResponse = HttpRequest.post("http://localhost:8090/api/name/user")
-                .addHeaders(getHeaderMap(json)) //关键：把算好的签名头放进去
-                .body(json) //塞入请求体
-                .execute();
 
-        System.out.println(httpResponse.body());
-        String result = httpResponse.body();
-        System.out.println(result);
-        return result;
+        try (HttpResponse httpResponse = HttpRequest.post("http://localhost:8090/api/name/user")
+                .addHeaders(AuthUtils.getHeaderMap(json,accessKey,secretKey))
+                .body(json)
+                .execute()) {
+
+            // 只要走出了这个 try 的大括号，httpResponse 就会被自动安全关闭
+            String result = httpResponse.body();
+            System.out.println(result);
+            return result;
+        }
 
     }
 }
