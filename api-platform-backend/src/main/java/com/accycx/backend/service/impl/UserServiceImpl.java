@@ -80,7 +80,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 //    用户登录逻辑
     @Override
     public LoginUserVO userLogin(String userAccount, String userPassword){
-//        1.校验费控
+//        1.校验非空
         if(StringUtils.isAnyBlank(userAccount,userPassword)){
             throw new RuntimeException("账号和密码不能为空");
         }
