@@ -1,5 +1,6 @@
 package com.accycx.common;
 
+import com.accycx.common.enums.ErrorCode;
 import lombok.Data;
 
 import java.io.Serializable;

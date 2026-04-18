@@ -1,7 +1,7 @@
 package com.accycx.common.utils;
 
 import com.accycx.common.BaseResponse;
-import com.accycx.common.ErrorCode;
+import com.accycx.common.enums.ErrorCode;
 
 /**
  * 返回工具类
