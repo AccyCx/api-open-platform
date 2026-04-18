@@ -10,15 +10,13 @@ spring:
 
 mybatis-plus:
   configuration:
-    map-underscore-to-camel-case: true # ?????????????? Java ????
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # ????? SQL ???????
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
-#假设这是平台管理员的专属密钥
+
 api:
-  client:
-    access-key: accycx_admin_ak
-    secret-key: accycx_admin_sk
-
+  gateway:
+    host: http://localhost:8090/api # API 网关地址
 dubbo:
   application:
     name: api-platform-backend #服务名
