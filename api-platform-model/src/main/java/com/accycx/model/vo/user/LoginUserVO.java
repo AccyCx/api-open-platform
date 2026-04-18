@@ -21,4 +21,10 @@ public class LoginUserVO implements Serializable {
 
     @Schema(description = "令牌")
     private String token;//颁发给前端的令牌
+
+    @Schema(description = "公钥")
+    private String accessKey;
+
+    @Schema(description = "密钥")
+    private String secretKey;
 }
