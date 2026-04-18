@@ -1,6 +1,7 @@
 package com.accycx.common.utils;
 
-import org.springframework.util.DigestUtils;
+import cn.hutool.crypto.digest.DigestAlgorithm;
+import cn.hutool.crypto.digest.Digester;
 
 import java.nio.charset.StandardCharsets;
 
@@ -13,15 +14,18 @@ public class SignUtils {
      *
      * @param body 请求体内容（或者请求参数）
      * @param secretKey 用户的私钥
+     * @param nonce 随机数，防止重放攻击
+     * @param timestamp 时间戳，防止重放攻击
      * @return 经过MD5加密的签名字符串
      */
-    public static String genSign(String body,String secretKey){
+    public static String genSign(String body,String secretKey,String nonce, String timestamp){
 
 //        防止明文拼接被破解，可以在body和secretKey之间加入一个固定的分隔符，增加破解难度
-        String content = body+ "." + secretKey;
+        String content = body+ "." + secretKey+"."+ nonce + "." + timestamp;
 
-        return DigestUtils.md5DigestAsHex(content.getBytes(StandardCharsets.UTF_8));
-//            TODO:一般还会把随机数（Nonce）和时间戳（Timestamp）加入签名拼接中，以此防范“重放攻击，
-//             目前先用最精简的 body + SK 跑通主流程，后面做网关拦截时可以再加固
+
+        Digester md5 = new Digester(DigestAlgorithm.MD5);
+        return md5.digestHex(content, StandardCharsets.UTF_8);
+
     }
 }

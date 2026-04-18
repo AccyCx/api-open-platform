@@ -91,7 +91,7 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
         }
 
         String secretKey = invokeUser.getSecretKey();
-        String serverSign = SignUtils.genSign(body, secretKey);
+        String serverSign = SignUtils.genSign(body, secretKey, nonce, timestamp);
         if(sign == null || !sign.equals(serverSign)){
             return handleNoAuth(response);
         }
