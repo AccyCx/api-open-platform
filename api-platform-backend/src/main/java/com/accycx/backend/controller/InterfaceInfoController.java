@@ -77,6 +77,8 @@ public class InterfaceInfoController {
         if(!result){
             return ResultUtils.error(ErrorCode.OPERATION_ERROR,"创建接口失败");
         }
+
+        log.info("管理员创建新接口成功，操作人ID: {}, 新接口ID: {}", loginUser.getId(), interfaceInfo.getId());
         return ResultUtils.success(interfaceInfo.getId());
     }
 
@@ -91,6 +93,7 @@ public class InterfaceInfoController {
             return ResultUtils.error(ErrorCode.PARAMS_ERROR);
         }
         boolean result = interfaceInfoService.removeById(id);
+        log.info("管理员执行删除接口操作，目标接口ID: {}, 删除结果: {}", id, result);
         return ResultUtils.success(result);
 
     }
@@ -113,6 +116,7 @@ public class InterfaceInfoController {
         interfaceInfoService.validInterfaceInfo(interfaceInfo,false);
 
         boolean result = interfaceInfoService.updateById(interfaceInfo);
+        log.info("管理员执行更新接口操作，接口ID: {}, 更新结果: {}", interfaceInfo.getId(), result);
         return ResultUtils.success(result);
     }
 

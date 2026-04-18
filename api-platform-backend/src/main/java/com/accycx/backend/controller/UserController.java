@@ -12,6 +12,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 /**
  * 用户接口
  */
+@Slf4j
 @RestController  //标注这是一个 RESTFul 控制器，返回 JSON 数据
 @RequestMapping("/user") //接口基础路径
 @Tag(name = "用户接口", description = "用户的注册、登录与管理")
@@ -55,6 +57,8 @@ public class UserController {
 //        4.调用Service层执行真正的注册落库逻辑
         long result = userService.userRegister(userAccount, userPassword, checkPassword);
 
+
+        log.info("新用户注册成功，账号: {}, 分配的用户ID: {}", userAccount, result);
 //        5.将结果包装成标准格式返回给前端
         return ResultUtils.success(result);
     }
@@ -86,6 +90,7 @@ public class UserController {
 //       获取包含Token的完整登录信息
         LoginUserVO loginUserVO = userService.userLogin(userAccount, userPassword);
 
+        log.info("用户登录成功，账号: {}, 角色: {}, 用户ID: {}", userAccount, loginUserVO.getUserRole(), loginUserVO.getId());
         return ResultUtils.success(loginUserVO);
     }
 
