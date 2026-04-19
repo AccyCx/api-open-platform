@@ -1,13 +1,18 @@
 package com.accycx.backend.controller;
 
 import com.accycx.backend.service.UserService;
+import com.accycx.common.AuthCheck;
 import com.accycx.common.BaseResponse;
 import com.accycx.common.enums.ErrorCode;
+import com.accycx.common.utils.KeyUtils;
+import com.accycx.common.utils.PasswordUtils;
 import com.accycx.common.utils.ResultUtils;
+import com.accycx.model.dto.user.UserAddrequest;
 import com.accycx.model.dto.user.UserLoginRequest;
 import com.accycx.model.dto.user.UserRegisterRequest;
 import com.accycx.model.entity.User;
 import com.accycx.model.vo.user.LoginUserVO;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -106,6 +111,56 @@ public class UserController {
         BeanUtils.copyProperties(user,loginUserVO);
 
         return ResultUtils.success(loginUserVO);
+    }
+
+    /**
+     * 后台新增用户（含管理员）
+     */
+    @PostMapping
+    @Operation(summary = "添加用户/管理员")
+    @AuthCheck(mustRole = "admin")
+    @SuppressWarnings("Duplicates")
+    public BaseResponse<Long> addUser(@RequestBody UserAddrequest userAddrequest){
+//        校验非空
+        if(userAddrequest == null){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"请求参数为空");
+        }
+        String userAccount = userAddrequest.getUserAccount();
+        String userPassword = userAddrequest.getUserPassword();
+        String userRole = userAddrequest.getUserRole();
+        if(StringUtils.isAnyBlank(userAccount,userPassword,userRole)){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"账号、密码、角色都不能为空");
+        }
+//      角色白名单校验
+        if(!"admin".equals(userRole) && !"user".equals(userRole)){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"用户角色非法，仅支持“admin”或“user”");
+        }
+
+//        校验账号是否已存在
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("userAccount",userAccount);
+        long count = userService.count(queryWrapper);
+        if(count>0){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"该账号已存在！");
+        }
+        String encryptPassword = PasswordUtils.encryptPassword(userPassword);
+        String accessKey = KeyUtils.generateAccessKey();
+        String secretKey = KeyUtils.generateSecretKey();
+        User newUser = new User();
+        newUser.setUserAccount(userAccount);
+        newUser.setUserPassword(encryptPassword);
+        newUser.setAccessKey(accessKey);
+        newUser.setSecretKey(secretKey);
+        newUser.setUserRole(userRole);
+        boolean result = userService.save(newUser);
+        if(!result){
+            return ResultUtils.error(ErrorCode.OPERATION_ERROR,"新增 用户/管理员 失败！数据库操作异常");
+        }
+        log.info("创建新用户成功！用户id：{},用户账号{},用户角色{}",newUser.getId(),userAccount,userRole);
+        return ResultUtils.success(newUser.getId());
+
+
+
     }
 
 }
