@@ -4,6 +4,7 @@ package com.accycx.model.vo.user;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 @Data
@@ -27,4 +28,7 @@ public class LoginUserVO implements Serializable {
 
     @Schema(description = "密钥")
     private String secretKey;
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 }

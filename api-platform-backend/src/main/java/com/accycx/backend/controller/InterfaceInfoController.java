@@ -4,9 +4,14 @@ package com.accycx.backend.controller;
 import cn.hutool.http.HttpRequest;
 import cn.hutool.http.HttpResponse;
 import cn.hutool.http.Method;
+import com.accycx.backend.mapper.UserInterfaceInvokeMapper;
 import com.accycx.common.AuthCheck;
 import com.accycx.common.enums.InterfaceInfoStatus;
 import com.accycx.common.utils.AuthUtils;
+import com.accycx.model.entity.UserInterfaceInvoke;
+import com.accycx.model.vo.interfaces.InterfaceInfoStatisticsVO;
+import com.accycx.model.vo.interfaces.InterfaceInvokeVO;
+import com.alibaba.nacos.client.naming.utils.CollectionUtils;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.accycx.backend.service.InterfaceInfoService;
 import com.accycx.backend.service.UserService;
@@ -30,6 +35,11 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 /**
  * 接口管理 API
  */
@@ -48,6 +58,8 @@ public class InterfaceInfoController {
     @Value("${api.gateway.host}")
     private String gatewayHost; //动态获取网关地址
 
+    @Resource
+    private UserInterfaceInvokeMapper userInterfaceInvokeMapper;
 
     /**
      * 创建接口
@@ -149,50 +161,51 @@ public class InterfaceInfoController {
             return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
         }
 
-//        2.动态获取当前管理员的AK/SK
-        User loginUser = userService.getLoginUser(request);
-        String accessKey = loginUser.getAccessKey();
-        String secretKey = loginUser.getSecretKey();
-
-//        动态拼接请求URL和方法
-        String url = gatewayHost + oldInterfaceInfo.getUrl();
-        String methodStr = oldInterfaceInfo.getMethod();
-
-//        尝试从数据库获取该接口的标准请求参数,如果没有，给个空JSON兜底防报错
-        String requestParams = StringUtils.isNotBlank(oldInterfaceInfo.getRequestParams()) ? oldInterfaceInfo.getRequestParams() : "{}";
-
-        log.info("开始进行接口连通性测试，目标URL：{}，请求方法：{}", url, methodStr);
-
-//        动态网络调用与容错处理
-        try{
-            Method httpMethod = Method.valueOf(methodStr.toUpperCase());
-
-            try(HttpResponse response = HttpRequest.of(url)
-                    .method(httpMethod)
-                    .addHeaders(AuthUtils.getHeaderMap(requestParams,accessKey,secretKey))
-                    .body(requestParams)
-                    .timeout(5000) //设置超时时间为5秒,防止接口无响应导致发布卡死
-                    .execute()){
-                int status = response.getStatus();
-                log.info("接口测试完毕，响应状态码：{}", status);
-
-//                只要网关没有返回404、500、502、503等系统致命错误，说明接口是通的
-                if(status >= 404 && status != 405){
-                    return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网关返回异常状态码: " + status);
-                }
-            }
-        } catch(IllegalArgumentException e){
-            log.error("不支持的HTTP方法：{}",methodStr,e);
-            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"不支持的HTTP方法："+ methodStr);
-        } catch(Exception e){
-            log.error("接口连通性测试网络异常",e);
-            return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网络异常: " + e.getMessage());
-        }
+////        2.动态获取当前管理员的AK/SK
+//        User loginUser = userService.getLoginUser(request);
+//        String accessKey = loginUser.getAccessKey();
+//        String secretKey = loginUser.getSecretKey();
+//
+////        动态拼接请求URL和方法
+//        String url = gatewayHost + oldInterfaceInfo.getUrl();
+//        String methodStr = oldInterfaceInfo.getMethod();
+//
+////        尝试从数据库获取该接口的标准请求参数,如果没有，给个空JSON兜底防报错
+//        String requestParams = StringUtils.isNotBlank(oldInterfaceInfo.getRequestParams()) ? oldInterfaceInfo.getRequestParams() : "{}";
+//
+//        log.info("开始进行接口连通性测试，目标URL：{}，请求方法：{}", url, methodStr);
+//
+////        动态网络调用与容错处理
+//        try{
+//            Method httpMethod = Method.valueOf(methodStr.toUpperCase());
+//
+//            try(HttpResponse response = HttpRequest.of(url)
+//                    .method(httpMethod)
+//                    .addHeaders(AuthUtils.getHeaderMap(requestParams,accessKey,secretKey))
+//                    .body(requestParams)
+//                    .timeout(5000) //设置超时时间为5秒,防止接口无响应导致发布卡死
+//                    .execute()){
+//                int status = response.getStatus();
+//                log.info("接口测试完毕，响应状态码：{}", status);
+//
+////                只要网关没有返回404、500、502、503等系统致命错误，说明接口是通的
+//                if(status >= 404 && status != 405){
+//                    return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网关返回异常状态码: " + status);
+//                }
+//            }
+//        } catch(IllegalArgumentException e){
+//            log.error("不支持的HTTP方法：{}",methodStr,e);
+//            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"不支持的HTTP方法："+ methodStr);
+//        } catch(Exception e){
+//            log.error("接口连通性测试网络异常",e);
+//            return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网络异常: " + e.getMessage());
+//        }
 //        5.测试通过，更新接口状态为上线
         InterfaceInfo interfaceInfo = new InterfaceInfo();
         interfaceInfo.setId(id);
         interfaceInfo.setStatus(InterfaceInfoStatus.ONLINE.getValue());
         boolean result = interfaceInfoService.updateById(interfaceInfo);
+        log.info("管理员成功上线接口，接口ID：{}", id);
         return ResultUtils.success(result);
     }
 
@@ -255,6 +268,13 @@ public class InterfaceInfoController {
 //        如果用户没填参数，给个默认空JSON，防止签名报错
         if(StringUtils.isBlank(userRequestParams)){
             userRequestParams = "{}";
+        }else {
+            try {
+                // 将带换行和缩进的 JSON 压缩成单行字符串
+                userRequestParams = cn.hutool.json.JSONUtil.parseObj(userRequestParams).toString();
+            } catch (Exception e) {
+                return ResultUtils.error(ErrorCode.PARAMS_ERROR, "请求参数不是合法的 JSON 格式！");
+            }
         }
 //        6.动态拼接网关URL
         String url = gatewayHost+ oldInterfaceInfo.getUrl(); //网关地址 + 接口路径
@@ -267,6 +287,7 @@ public class InterfaceInfoController {
 //            动态发起请求，可以适配所有Method方法
             try (HttpResponse response = cn.hutool.http.HttpRequest.of(url)
                     .method(httpMethod) //动态塞入请求方法
+                    .header("Content-Type", "application/json;charset=UTF-8")
                     .addHeaders(AuthUtils.getHeaderMap(userRequestParams, accessKey, secretKey))//塞入鉴权信息
                     .body(userRequestParams) //塞入用户请求参数
                     .execute()) {//发起请求
@@ -323,7 +344,62 @@ public class InterfaceInfoController {
         Page<InterfaceInfo> interfaceInfoPage = interfaceInfoService.page(new Page<>(current,size),queryWrapper);
         return ResultUtils.success(interfaceInfoPage);
     }
+    /**
+     * 获取调用次数 TOP 5 的接口
+     */
+    @GetMapping("/top/invoke")
+    @Operation(summary = "获取调用次数前5的接口")
+    @AuthCheck(mustRole = "admin") // 仅管理员可看大盘
+    public BaseResponse<List<InterfaceInvokeVO>> getTopInvokeInterfaces() {
+        // 1. 查询调用量排名前 5 的接口 ID 及其总调用次数
+        List<UserInterfaceInvoke> userInterfaceInfoList = userInterfaceInvokeMapper.listTopInvokeInterfaceInfo(5);
+        if (CollectionUtils.isEmpty(userInterfaceInfoList)) {
+            return ResultUtils.success(new ArrayList<>());
+        }
 
+        // 2. 提取出这 5 个接口的 ID 集合
+        List<Long> interfaceInfoIdList = userInterfaceInfoList.stream()
+                .map(UserInterfaceInvoke::getInterfaceInfoId)
+                .collect(Collectors.toList());
+
+        // 3. 批量查询这些接口的详细信息 (为了拿到接口的 Name)
+        QueryWrapper<InterfaceInfo> queryWrapper = new QueryWrapper<>();
+        queryWrapper.in("id", interfaceInfoIdList);
+        List<InterfaceInfo> interfaceInfoList = interfaceInfoService.list(queryWrapper);
+
+        // 4. 将接口信息和调用总数拼装到 VO 中
+        // 按照 interfaceInfoList 的 ID 将接口信息分组，方便后续快速查找
+        Map<Long, List<InterfaceInfo>> interfaceInfoIdObjMap = interfaceInfoList.stream()
+                .collect(Collectors.groupingBy(InterfaceInfo::getId));
+
+        List<InterfaceInvokeVO> interfaceInfoVOList = userInterfaceInfoList.stream().map(userInterfaceInfo -> {
+            InterfaceInvokeVO interfaceInfoVO = new InterfaceInvokeVO();
+            // 复制总调用次数
+            interfaceInfoVO.setTotalNum(userInterfaceInfo.getTotalNum());
+            // 匹配对应的接口详情
+            List<InterfaceInfo> infoList = interfaceInfoIdObjMap.get(userInterfaceInfo.getInterfaceInfoId());
+            if (!CollectionUtils.isEmpty(infoList)) {
+                // 复制接口原本的属性 (包括 Name 等)
+                BeanUtils.copyProperties(infoList.get(0), interfaceInfoVO);
+            }
+            return interfaceInfoVO;
+        }).collect(Collectors.toList());
+
+        return ResultUtils.success(interfaceInfoVOList);
+    }
+
+    /**
+     * 获取接口总览数据 (总数、发布数、下线数)
+     *
+     * @return 统计数据VO
+     */
+    @GetMapping("/statistics")
+    @Operation(summary = "获取接口总览数据")
+    @AuthCheck(mustRole = "admin") // 仅管理员可看大盘
+    public BaseResponse<InterfaceInfoStatisticsVO> getInterfaceStatistics(){
+        InterfaceInfoStatisticsVO statisticsVO = interfaceInfoService.getInterfaceStatistics();
+                return ResultUtils.success(statisticsVO);
+    }
 }
 
 

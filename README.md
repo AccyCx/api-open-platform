@@ -856,7 +856,7 @@ public class UserLoginRequest implements Serializable {
 
 ```
 
-登录成功后，前端不仅需要 Token，还需要展示用户的账号和角色。我们绝对不能把包含 AK/SK 的原声 `User` 类直接扔给前端，所以要用一个脱敏的 VO 包装一下。
+登录成功后，前端不仅需要 Token，还需要展示用户的账号和角色。我们绝对不能把包含无关敏感数据的原声 `User` 类直接扔给前端，所以要用一个脱敏的 VO 包装一下。
 
 ```java
 @Data
@@ -874,6 +874,12 @@ public class LoginUserVO implements Serializable {
 
     @Schema(description = "令牌")
     private String token;//颁发给前端的令牌
+
+    @Schema(description = "公钥")
+    private String accessKey;
+
+    @Schema(description = "密钥")
+    private String secretKey;
 }
 
 ```
@@ -1072,27 +1078,6 @@ public class InterfaceInfoUpdateRequest implements Serializable {
 
 ```
 
-因为通常删除一条数据只需要传一个主键`id`，所以可以给所有模块写一个通用的删除请求体，所有的模块，只要是删除操作，统一复用这个类
-
-### 通用删除请求体：`DeleteRequest.java`
-
-```java
-/**
- * 通用删除请求体
- */
-@Data
-public class DeleteRequest implements Serializable {
-
-    /**
-     * 主键 ID
-     */
-    private Long id;
-
-    @Serial
-    private static final long serialVersionUID = 1L;
-}
-```
-
 骨架和契约搭好了，下一步就是写Service层，完成刚刚提到的参数校验，然后在Controller层写增删改查的完整HTTP接口
 
 ## 第三步：核心业务逻辑与 Controller
@@ -1157,7 +1142,7 @@ public class InterfaceInfoController {
     /**
      * 创建接口
      */
-    @PostMapping("/add")
+    @PostMapping
     @Operation(summary = "发布新接口")
     public BaseResponse<Long> addInterfaceInfo(@RequestBody InterfaceInfoAddRequest interfaceInfoAddRequest){
 
@@ -1185,22 +1170,24 @@ public class InterfaceInfoController {
     /**
      * 删除接口
      */
-    @DeleteMapping("/delete")
+    @DeleteMapping("/{id}")
     @Operation(summary = "删除接口")
-    public BaseResponse<Boolean> deleteInterfaceInfo(@RequestBody DeleteRequest deleteRequest){
-        if(deleteRequest == null || deleteRequest.getId() <= 0){
-            return ResultUtils.error(ErrorCode.OPERATION_ERROR);
+    @AuthCheck(mustRole = "admin") //只有管理员才能删除接口
+    public BaseResponse<Boolean> deleteInterfaceInfo(@PathVariable("id") Long id){
+        if(id == null || id <= 0){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
         }
-        boolean result = interfaceInfoService.removeById(deleteRequest.getId());
+        boolean result = interfaceInfoService.removeById(id);
         return ResultUtils.success(result);
 
     }
 
-    /**
+   /**
      * 更新接口
      */
-    @PostMapping("/update")
+    @PutMapping
     @Operation(summary = "更新接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能更新接口
     public BaseResponse<Boolean> updateInterfaceInfo(@RequestBody InterfaceInfoUpdateRequest interfaceInfoUpdateRequest){
         if(interfaceInfoUpdateRequest == null || interfaceInfoUpdateRequest.getId()<=0){
             return ResultUtils.error(ErrorCode.PARAMS_ERROR);
@@ -1219,16 +1206,15 @@ public class InterfaceInfoController {
     /**
      * 根据ID查询接口详细信息
      */
-    @GetMapping("/get")
+    @GetMapping("/{id}")
     @Operation(summary = "根据ID获取接口详细信息")
-    public BaseResponse<InterfaceInfo> getInterfaceInfoById(Long id){
+    public BaseResponse<InterfaceInfo> getInterfaceInfoById(@PathVariable("id") Long id){
         if(id <= 0){
             return ResultUtils.error(ErrorCode.PARAMS_ERROR);
         }
         InterfaceInfo interfaceInfo = interfaceInfoService.getById(id);
         return ResultUtils.success(interfaceInfo);
     }
-}
 
 
 ```
@@ -1527,9 +1513,9 @@ http://localhost:8102/name/get?name=accycx
 
 ## 模拟用户使用接口服务
 
-由于手写底层的 `HttpURLConnection`太过繁琐，所以我们在这里引入**Hutool**工具包
+由于手写底层的 `HttpURLConnection`太过繁琐，所以我们在这里引入**`Hutool`**工具包
 
-### 第一步：引入 Hutool 工具包
+### 第一步：引入 `Hutool` 工具包
 
 在`api-platform-interface` 模块引入依赖：
 
@@ -1652,7 +1638,7 @@ public class Main {
 
 故意把 `String secretKey = "accycx_test_sk";`改错后再测试，后台会返回错误信息：
 
-![测试结果](C:\Users\86173\AppData\Roaming\Typora\typora-user-images\image-20260409113938157.png)
+![测试结果](https://bu.dusays.com/2026/04/09/69d71f6f6aa0c.png)
 
 ## 开发SDK
 
@@ -1703,7 +1689,39 @@ public class Main {
 2. `SignUtils.java` (签名工具)
 3. `ApiClient.java` (客户端)
 
-然后把`api-platform-interface`包下的`ApiClient.java`删了
+然后把`api-platform-interface`包下的`ApiClient.java`删了,接着需要把`ApiClient.java`里写的私有组装请求头的方法单独分离出来，保证`ApiClient.java`里面都是干净的调用接口类：（这里在Common模块也进行同样操作，后面会用到组装请求头的方法）
+
+在`Utils`包下创建`AuthUtils.java`
+
+```java
+public class AuthUtils {
+    /**
+     * 核心逻辑：组装请求头
+     * 把凭证全部放在Header里
+     */
+    public static Map<String,String> getHeaderMap(String body, String accessKey, String secretKey){
+        Map<String,String> hashMap = new HashMap<>();
+        hashMap.put("accessKey",accessKey);
+
+//       生成随机数（防重放）
+        hashMap.put("nonce", cn.hutool.core.util.RandomUtil.randomNumbers(4));
+
+//        生成当前时间戳（防过期）
+        hashMap.put("timestamp",String.valueOf(System.currentTimeMillis() / 1000));
+
+//        将请求体参与签名计算
+        hashMap.put("body",body);
+
+//        生成签名
+        hashMap.put("sign", SignUtils.genSign(body,secretKey));
+
+        return hashMap;
+    }
+}
+
+```
+
+记得把`ApiClient.java`里对应的调用方法也改一下。
 
 ### 第二步：编写自动装配类 (`AutoConfiguration`)
 
@@ -1711,31 +1729,45 @@ public class Main {
 
 **1. 创建属性配置类** 
 
-在 `apiclientsdk` 包下新建 `client` 包，创建 `ApiClientConfig.java`：
+在 `apiclientsdk` 包下新建 `client` 包，创建 `ApiClientProperties.java`：
+
+```java
+/**
+ * API 客户端配置属性（纯数据类）
+ */
+@Data
+//这个注解的意思是：去 application.yml 里读取前缀为 "api.client" 的配置，映射到这个类的属性上
+@ConfigurationProperties("api.client")
+public class ApiClientProperties {
+
+    /**
+     * 访问密钥（只要加上这行注释，别人敲 YAML 时就会有中文提示）
+     */
+    private String accessKey;
+
+    /**
+     * 秘密密钥
+     */
+    private String secretKey;
+}
+```
+
+在同一个包的位置下创建：`ApiClientConfig.java`：
 
 ```java
 /**
  * ApiClient 自动配置类
  */
 @Configuration
-//这个注解的意思是：去 application.yml 里读取前缀为 "api.client" 的配置，映射到这个类的属性上
-@ConfigurationProperties("api.client")
-@Data
-@ComponentScan
+@EnableConfigurationProperties(ApiClientProperties.class) // 激活属性类
 public class ApiClientConfig {
 
-    private String accessKey;
-    private String secretKey;
-
-    /**
-     * 将ApiClient 注入到Spring容器中国
-     */
-    public ApiClient apiClient(){
-//        使用配置文件中读取到的ak和sk实例化客户端
-        return new ApiClient(accessKey, secretKey);
+    @Bean
+    public ApiClient apiClient(ApiClientProperties properties) {
+        // 通过入参拿到已经装载好 YAML 数据的 properties
+        return new ApiClient(properties.getAccessKey(), properties.getSecretKey());
     }
 }
-
 ```
 
 **2. 注册自动配置类** 
@@ -1830,114 +1862,6 @@ class ApiPlatformInterfaceApplicationTests {
 
 - **缺失的拼图一：动态分配凭证。** 现在的 AK/SK 都是我们为了跑通主流程在代码里写死的（`accycx_test_ak`）。真实情况是，每个用户注册后，会在主平台的数据库里生成自己独一无二的 AK/SK。
 - **缺失的拼图二：真实的验签逻辑。** 我们的 `interface` 服务现在是在本地拦截器里写死了AK、SK 来对比。真实的业务是：`interface` 服务收到请求后，必须通过**某种方式**，拿着用户传过来的 `accessKey`，去**主数据库**里查出对应的 `secretKey`，才能完成验签。
-
-**所以，下一步要进行：主后台与SDK联动。**
-
-## 主后台与SDK联动
-
-我们要把刚才写好的、纯净无暇的 SDK 接入到主业务模块 **`api-platform-backend`** 中，让主后台真正拥有调用 API 的能力。
-
-未来的业务场景：
-
-管理员可以在主平台的管理界面上，直接点击一个“在线测试调用”按钮，主后台底层就会使用这个 SDK，自动带着管理员的 AK/SK 去调用 `interface` 模块里的真实接口，并把结果展示在页面上！
-
-### 第一步：在主业务后台引入 SDK
-
-打开 **`api-platform-backend`** 模块的 `pom.xml`，把我们的轮子装上去：
-
-```xml
-		<dependency>
-			<groupId>com.accycx</groupId>
-			<artifactId>api-platform-client-sdk</artifactId>
-			<version>1.0-SNAPSHOT</version>
-		</dependency>
-```
-
-### 第二步：给主后台配置“管理员”凭证
-
-为了让主后台能代表平台方去“在线测试”接口，我们需要给主后台配置一套凭证（这也是我们 SDK 自动装配必须的）。
-
-打开 `api-platform-backend` 模块的 `src/main/resources/application.yml`，在底部添加：
-
-```yaml
-api:
-  client:
-    access-key: accycx_admin_ak
-    secret-key: accycx_admin_sk
-```
-
-第三步：编写“在线调用”业务逻辑
-
-我们在之前的`InterfaceInfoController`，增加一个“在线测试调用”的接口。
-
-**1. 新建在线测试请求体 (DTO)** 在 `api-platform-model` 模块下的 `com.accycx.model.dto.interfaceinfo` 包中，新建 `InterfaceInfoInvokeRequest.java`：
-
-```java
-/**
- * 接口调用请求体
- */
-@Data
-public class InterfaceInfoInvokeRequest implements Serializable {
-
-//    接口主键id
-    private Long id;
-
-//    用户传入的测试参数（如果是JSON格式，那就是那一串JSON字符串）
-    private String userRequestParams;
-
-    @Serial
-    private static final long serialVersionUID = 1L;
-}
-
-```
-
-**2. 增加调用 Controller 接口** 回到 `api-platform-backend` 模块的 `InterfaceInfoController`，在最下面添加这个接口：
-
-```java
-    @Resource
-    private ApiClient apiClient;
-   
-   /**
-     * 在线调用（测试）接口
-     */
-    @PostMapping("/invoke")
-    @Operation(summary = "在线调用测试接口")
-    public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest){
-//        1.校验参数
-        if(invokeRequest == null || invokeRequest.getId() <=0){
-            return ResultUtils.success(ErrorCode.PARAMS_ERROR);
-        }
-
-//        2.判断接口是否存在
-        long id = invokeRequest.getId();
-        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
-        if(oldInterfaceInfo == null){
-            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
-        }
-
-//        3.判断接口状态是否开启（1是开启）
-        if(oldInterfaceInfo.getStatus() != 1){
-            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"接口已关闭");
-        }
-
-//        4.发起实际调用
-//        这里应该根据oldInterfaceInfo.getUrl()动态去调
-//        但是目前为了跑通主流程，先用if-else写死判断，只测试"/name/user"接口
-        String userRequestParams = invokeRequest.getUserRequestParams();
-        if(oldInterfaceInfo.getUrl().contains("/name/user")){
-//            利用Hutool将前端传来的JSON字符串反序列化为User对象
-        com.accycx.apiclientsdk.model.User user = cn.hutool.json.JSONUtil.toBean(userRequestParams, com.accycx.apiclientsdk.model.User.class);
-
-//        主后台使用装配好的SDK客户端发起真实网络请求
-            String result = apiClient.getUserNameByPost(user);
-            return ResultUtils.success(result);
-        }
-        return ResultUtils.error(ErrorCode.PARAMS_ERROR,"目前仅支持测试/name/user接口");
-    }
-
-```
-
-写完这段代码后，`/invoke` 接口就完成了，现在我们可以把interface模块的接口地址信息用之前写过的增加接口功能存入数据库里，然后再用`ApiFox`测试这个新添的接口。
 
 ## 跨服务鉴权与 RPC 调用
 
@@ -2166,7 +2090,7 @@ public class ApiPlatformBackendApplication {
 
 # 阶段四：网关与中间件（高并发攻坚）
 
-本章是阶段四的上半部分，主要包括网关的搭建以及前面一些遗留下来的业务逻辑需要处理，还包括前端页面的展示。
+本章是阶段四的上半部分，主要包括网关的搭建以及前面一些遗留下来的业务逻辑需要处理。
 
 # 网关（Gateway）
 
@@ -2413,6 +2337,92 @@ http://localhost:8090/api/name/get?name=Test
 到这里，这个复杂的跨进程链路就彻底跑通了：
 
 SDK（客户端）发起请求 -> 打向 Gateway（8090） -> Gateway 进行签名拦截 -> Gateway 通过 Dubbo RPC 去 Backend 查数据库比对签名 -> 签名一致，Gateway 放行 -> Gateway 根据路由规则，将请求转发给 Interface（8102） -> Interface 执行业务逻辑并原路返回
+
+## 重构签名逻辑`SignUtils.java`
+
+之前的签名逻辑里面为了跑通主流程，只拼接了请求体和密钥，现在可以加上随机数nonce和时间戳timestamp了
+
+打开之前写的`SignUtils.java`，更新为：
+
+```java
+/**
+ * API签名工具类
+ */
+public class SignUtils {
+    /**
+     * 生成API调用签名
+     *
+     * @param body 请求体内容（或者请求参数）
+     * @param secretKey 用户的私钥
+     * @param nonce 随机数，防止重放攻击
+     * @param timestamp 时间戳，防止重放攻击
+     * @return 经过MD5加密的签名字符串
+     */
+    public static String genSign(String body,String secretKey,String nonce, String timestamp){
+
+//        防止明文拼接被破解，可以在body和secretKey之间加入一个固定的分隔符，增加破解难度
+        String content = body+ "." + secretKey+"."+ nonce + "." + timestamp;
+
+
+        Digester md5 = new Digester(DigestAlgorithm.MD5);
+        return md5.digestHex(content, StandardCharsets.UTF_8);
+
+    }
+}
+
+```
+
+这里把`DigestUtils`换成了 `Digester`，之前用的 `DigestUtils.md5DigestAsHex` 是 **Spring 框架**（`org.springframework.util`）自带的工具类，但现在我们的`SignUtils` 是放在单独的 `SDK` 模块里的，SDK 模块是给第三方用的，它必须极其轻量，而 `Digester` 是 **`Hutool`** (`cn.hutool.crypto.digest`) 里的轻量级工具。引入 `Hutool` 的 `hutool-crypto` 只有几百 KB，第三方开发者用起来毫无负担。
+
+### 更新 SDK 里的 `AuthUtils`
+
+我们需要修改 SDK 发送请求时**生成请求头**的方法。把生成的 `nonce` 和 `timestamp` 传给 `genSign`。
+
+```java
+public class AuthUtils {
+    /**
+     * 核心逻辑：组装请求头
+     * 把凭证全部放在Header里
+     */
+    public static Map<String,String> getHeaderMap(String body, String accessKey, String secretKey){
+        Map<String,String> hashMap = new HashMap<>();
+        hashMap.put("accessKey",accessKey);
+
+//       生成随机数（防重放）
+        hashMap.put("nonce", cn.hutool.core.util.RandomUtil.randomNumbers(4));
+
+//        生成当前时间戳（防过期）
+        hashMap.put("timestamp",String.valueOf(System.currentTimeMillis() / 1000));
+
+//        将请求体参与签名计算
+        hashMap.put("body",body);
+
+//        生成签名
+        hashMap.put("sign", SignUtils.genSign(body,secretKey,hashMap.get("nonce"),hashMap.get("timestamp")));
+
+        return hashMap;
+    }
+}
+```
+
+### 更新网关 `CustomGlobalFilter` (API 海关)
+
+网关在拦截请求时，必须用这四个参数重新算一遍，如果算出来和前端传的不一样，就是非法请求。
+
+```java
+// ... 前面获取头信息和校验的逻辑保持不变 ...
+
+            // 在网关里找到生成 serverSign 的这行代码，把 nonce 和 timestamp 加进去
+            String secretKey = invokeUser.getSecretKey();
+            //一定要保证这里的参数顺序和 SDK 里拼接的顺序一模一样
+            String serverSign = SignUtils.genSign(body, secretKey, nonce, timestamp);
+            
+            if (sign == null || !sign.equals(serverSign)) {
+                return handleNoAuth(response);
+            }
+```
+
+然后重新打包SDK就好了。
 
 ## 接口调用次数统计
 
@@ -2728,13 +2738,591 @@ public class InnerInterfaceInfoServiceImpl implements InnerInterfaceInfoService 
 
 到现在这个项目的核心计费与鉴权大动脉已经彻底贯通，这标志着后端的核心架构（接口提供、SDK 封装、微服务治理、网关统一拦截、RPC 通信计费）已经基本成型。
 
-现在我们要去写前端页面，让用户有一个真正的页面去：
+网关搭建好之后，我们还需要整顿之前遗留下来的问题，把所有逻辑打通。
 
-1. 浏览所有的接口列表。
-2. 注册账号并查看自己的 AK/SK。
-3. 在网页上点击“申请调用”，分配调用次数。
-4. 在网页上填参数，一键实现在线测试（也就是去触发我们之前在 `backend` 里写的那个 `/invoke` 接口）。
+# 整顿遗留问题
 
-在写前端的同时，还可以根据前端页面需要展示的东西去完善之前写过的接口，或者添加新的需要的接口。
+## 新添分页查询接口（支持模糊搜索）
 
-等前后端彻底打通后，就开始对项目进行性能优化，引入中间件解决一系列问题。
+我们使用 `MyBatis Plus` 的 `Page` 对象和 `QueryWrapper` 来实现。
+
+### 分页基类`PageRequest.java`
+
+在 `api-platform-model` 模块下的 `com.accycx.model.dto.common` 包中，新建 `PageRequest.java`：
+
+```java
+/**
+ * 分页请求基类
+ */
+@Data
+public class PageRequest {
+
+//    当前页号
+    private long current = 1;
+
+//    页面大小
+    private long pageSize = 10;
+
+//    排序字段
+    private String sortField;
+
+//    排序方式（默认升序）
+    private String sortOrder = "ascend";
+}
+
+```
+
+### 接口信息查询请求体`InterfaceInfoQueryRequest`.java 
+
+在 `api-platform-model` 模块下的 `com.accycx.model.dto.interfaceinfo` 包中，新建 `InterfaceInfoQueryRequest.java`：
+
+```java
+/**
+ * 接口信息查询请求体
+ */
+@Data
+@EqualsAndHashCode(callSuper = true) //让 Lombok 在自动生成 equals() 和 hashCode() 方法时，把父类（也就是 PageRequest）里的属性也一起算进去
+public class InterfaceInfoQueryRequest extends PageRequest implements Serializable {
+
+//    接口名称（支持模糊搜索）
+    private String name;
+
+//    接口描述（支持模糊搜索）
+    private String description;
+
+//    接口请求方法
+    private String method;
+
+//    接口状态（0-关闭，1-开启）
+    private Integer status;
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+}
+
+```
+
+### 分页查询接口`listInterfaceInfoByPage.java`
+
+在 `api-platform-backend` 模块下的 `com.accycx.backend.controller` 包中`InterfaceInfoController.java`，增加如下分页查询接口：
+
+```java
+ /**
+     * 分页查询接口列表(封装了模糊查询逻辑)
+     */
+    @GetMapping("/list/page")
+    @Operation(summary = "分页查询接口列表")
+    public BaseResponse<Page<InterfaceInfo>> listInterfaceInfoByPage(InterfaceInfoQueryRequest interfaceInfoQueryRequest){
+
+        if(interfaceInfoQueryRequest == null){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
+        }
+
+
+        long current = interfaceInfoQueryRequest.getCurrent();
+        long size = interfaceInfoQueryRequest.getPageSize();
+        String sortField = interfaceInfoQueryRequest.getSortField();
+        String sortOrder = interfaceInfoQueryRequest.getSortOrder();
+        String name = interfaceInfoQueryRequest.getName(); //模糊查询参数
+        String description = interfaceInfoQueryRequest.getDescription(); //模糊查询参数
+
+        //限制：size不能大于50
+        if(size>50){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"每页条数不能超过50");
+        }
+
+        QueryWrapper<InterfaceInfo> queryWrapper = new QueryWrapper<>();
+//        模糊查询：如果name不为空，则匹配数据库中包含该字符串的记录
+        queryWrapper.like(StringUtils.isNotBlank(name), "name", name);
+        queryWrapper.like(StringUtils.isNotBlank(description), "description", description);
+
+//        排序逻辑
+        queryWrapper.orderBy(StringUtils.isNotBlank(sortField),
+                sortOrder.equals("ascend"), sortField);
+        Page<InterfaceInfo> interfaceInfoPage = interfaceInfoService.page(new Page<>(current,size),queryWrapper);
+        return ResultUtils.success(interfaceInfoPage);
+    }
+```
+
+## `@AuthCheck`角色认证
+
+因为有些接口只能由管理员使用，例如接口信息的增删改，所以我们要自定义写一个角色认证注解。
+
+在`Common`模块的`src/main/java/com/accycx/common`下新建`AuthCheck.java`：
+
+```java
+@Target(ElementType.METHOD) // 这个注解只能用在方法上
+@Retention(RetentionPolicy.RUNTIME) // 这个注解在运行时仍然可用，可以通过反射读取
+public @interface AuthCheck {
+
+//    必须有某个角色
+    String mustRole() default ""; // 需要的角色
+}
+```
+
+然后再写拦截器，在`Backend`模块的`src/main/java/com/accycx/backend/interceptor`下新建`AuthInterceptor.java`：
+
+```java
+@Aspect //标注这是一个切面类，里面定义了横切逻辑（拦截器）
+@Component
+public class AuthInterceptor {
+
+    @Resource
+    private UserService userService;
+
+//    执行拦截
+    @Around("@annotation(authCheck)") //拦截所有被 @AuthCheck 注解标记的方法
+    public Object doInterceptor(ProceedingJoinPoint joinPoint, AuthCheck authCheck) throws Throwable{
+//        ProceedingJoinPoint joinPoint: 代表被拦截的方法，可以通过它获取方法参数、方法签名等信息，并且可以调用 joinPoint.proceed() 来继续执行被拦截的方法。
+//        throws Throwable: 因为 joinPoint.proceed() 可能会抛出任何异常，所以我们需要在方法签名中声明 throws Throwable 来允许这些异常被传播。
+
+        String mustRole = authCheck.mustRole();
+//        获取当前请求的 RequestAttributes 对象，这个对象包含了当前 HTTP 请求的上下文信息，比如请求参数、请求头、会话等。我们需要它来获取当前登录用户的信息。
+//        RequestContextHolder 是 Spring 提供的一个工具类，用于获取当前线程绑定的 RequestAttributes 对象。它提供了几个静态方法来访问这些对象：
+//        currentRequestAttributes()：返回当前线程绑定的 RequestAttributes 对象，如果没有绑定则抛出 IllegalStateException。
+        RequestAttributes requestAttributes = RequestContextHolder.currentRequestAttributes();
+
+//      因为我们知道当前请求是一个 HTTP 请求，所以我们可以把 RequestAttributes 强制转换成 ServletRequestAttributes。
+//      ServletRequestAttributes 是 RequestAttributes 的一个子类，专门用于处理 HTTP 请求的上下文信息。它提供了一个 getRequest() 方法，可以直接获取当前的 HttpServletRequest 对象。
+        HttpServletRequest request = ((ServletRequestAttributes) requestAttributes).getRequest();
+
+//        1.获取当前登录用户
+        User loginUser = userService.getLoginUser(request);
+
+//        2.必须有管理员权限
+        if(StringUtils.isNotBlank(mustRole)){
+            String userRole = loginUser.getUserRole();
+            if(!mustRole.equals(userRole)){
+                return ResultUtils.error(ErrorCode.NO_AUTH_ERROR,"无权限访问");
+            }
+        }
+        return joinPoint.proceed();
+
+    }
+}
+
+```
+
+然后在`backend`模块的`InterfaceController.java`中，将需要管理员认证的接口统一加上注解：
+
+```java
+    @PostMapping
+    @Operation(summary = "创建新接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能发布新接口
+    public BaseResponse<Long> addInterfaceInfo(@RequestBody InterfaceInfoAddRequest interfaceInfoAddRequest,HttpServletRequest request){}
+
+    @DeleteMapping("/{id}")
+    @Operation(summary = "删除接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能删除接口
+    public BaseResponse<Boolean> deleteInterfaceInfo(@PathVariable("id") Long id){}
+    
+    @PutMapping
+    @Operation(summary = "更新接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能更新接口
+    public BaseResponse<Boolean> updateInterfaceInfo(@RequestBody InterfaceInfoUpdateRequest interfaceInfoUpdateRequest){}
+    
+
+
+```
+
+## 完善添加接口功能
+
+之前的添加接口中，是写死了创建用户的id为1的，我们需要新添一个获取当前登录用户信息的方法，然后引入`UserService`调用这个方法获取用户ID
+
+在`UserServiceImpl.java`中新添：
+
+```java
+//    获取当前登录用户的信息
+    @Override
+    public User getLoginUser(HttpServletRequest request){
+
+//        1.从请求头获取Token（前端放在Authorization字段或token字段）
+        String token = request.getHeader("Authorization");
+        if(StringUtils.isBlank(token)){
+//            兼容前端可能放在token字段里
+            token = request.getHeader("token");
+        }
+        if(StringUtils.isBlank(token)){
+            throw new RuntimeException("未登录：Token为空");
+        }
+
+//        2.解析Token，获取用户ID
+        long userId;
+        try{
+            Claims claims = JwtUtils.parseToken(token);
+            userId = claims.get("userId", Number.class).longValue();
+        } catch (Exception e) {
+            throw new RuntimeException("未登录：Token不合法或已过期");
+        }
+
+//        3.从数据库查询最新信息，确保AK/SK等敏感信息是最新的（如果用户被管理员禁用或删除了，这里也能查不到，保证安全性）
+        User currentUser = this.getById(userId);
+        if(currentUser == null){
+            throw new RuntimeException("用户不存在");
+        }
+
+        return currentUser;
+    }
+```
+
+其中，用到了JWT的一个`parseToken`的方法，功能是将Token解析出来，获取用户的id，我们现在将它补上：
+
+在Common模块的`JWTUtils.java`里面：
+
+```java
+    /**
+     * 解析Token
+     * @param token 客户端传来的JWT字符串
+     * @return Claims 载荷对象，里面包含用户信息
+     */
+    public static Claims parseToken(String token) {
+        try {
+//            使用parserBuilder设置密钥并解析token
+            return Jwts.parserBuilder()
+                    .setSigningKey(KEY) //必须使用签发时的同一把钥匙，比对密钥
+                    .build()//准备就绪，构造解析器
+                    .parseClaimsJws(token)//解析token，如果token无效或过期会抛出异常
+                    .getBody(); //获取token中的payload部分，也就是我们之前放入的claims
+        } catch (ExpiredJwtException e) {
+//            如果Token已经过了EXPIRE_TIME，会抛出这个异常
+            throw new RuntimeException("Token已过期，请重新登录");
+        } catch (MalformedJwtException e) {
+//            如果Token被人篡改过，或者根本不是一个合法的JWT，会抛出这个异常
+            throw new RuntimeException("Token不合法或被篡改");
+        } catch (Exception e) {
+//            其他异常（如签名无效等）
+            throw new RuntimeException("Token解析失败");
+        }
+    }
+```
+
+然后在添加接口中实现动态获取登录用户id：
+
+```java
+    @Resource
+    private UserService userService;
+
+    /**
+     * 创建接口
+     */
+    @PostMapping
+    @Operation(summary = "创建新接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能发布新接口
+    public BaseResponse<Long> addInterfaceInfo(@RequestBody InterfaceInfoAddRequest interfaceInfoAddRequest,HttpServletRequest request){
+
+        if(interfaceInfoAddRequest == null){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
+        }
+
+//        DTO转实体类
+        InterfaceInfo interfaceInfo = new InterfaceInfo();
+        BeanUtils.copyProperties(interfaceInfoAddRequest,interfaceInfo);
+
+//        校验参数
+        interfaceInfoService.validInterfaceInfo(interfaceInfo,true);
+
+//        动态获取当前登录用户的ID
+        User loginUser = userService.getLoginUser(request);
+        interfaceInfo.setUserId(loginUser.getId());
+
+        interfaceInfo.setStatus(InterfaceInfoStatus.OFFLINE.getValue());
+        boolean result = interfaceInfoService.save(interfaceInfo);
+        if(!result){
+            return ResultUtils.error(ErrorCode.OPERATION_ERROR,"创建接口失败");
+        }
+        return ResultUtils.success(interfaceInfo.getId());
+    }
+```
+
+## 添加在线调用接口测试功能
+
+我们要实现一个用户可以在平台在线测试接口的功能，实现方法如下：
+
+由于调用接口都首先要发送请求到网关，所以我们在`application.yml`自定义网关路径，相较于直接在接口里面拼接`url`，出现错误的话更方便排查与纠正：
+
+```yaml
+api:
+  gateway:
+    host: http://localhost:8090/api # API 网关地址
+```
+
+然后就可以在`InterfaceInfoController.java`中实现接口：
+
+```java
+     @Value("${api.gateway.host}")
+    private String gatewayHost; //动态获取网关地址
+  
+  /**
+     * 在线调用（测试）接口
+     */
+    @PostMapping("/invoke")
+    @Operation(summary = "在线调用测试接口")
+    @SuppressWarnings("Duplicates")
+    public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvokeRequest invokeRequest, HttpServletRequest request) {
+//        1.校验参数
+        if (invokeRequest == null || invokeRequest.getId() <= 0) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
+        }
+
+//        2.判断接口是否存在
+        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(invokeRequest.getId());
+        if (oldInterfaceInfo == null) {
+            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR, "接口不存在");
+        }
+
+//        3.判断接口状态是否开启
+        if (!oldInterfaceInfo.getStatus().equals(InterfaceInfoStatus.ONLINE.getValue())) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "接口已关闭，无法调用");
+        }
+//         4.获取当前登录的用户信息
+        User loginUser = userService.getLoginUser(request);
+        String accessKey = loginUser.getAccessKey();
+        String secretKey = loginUser.getSecretKey();
+
+//        5.获取前端用户输入的JSON参数
+        String userRequestParams = invokeRequest.getUserRequestParams();
+//        如果用户没填参数，给个默认空JSON，防止签名报错
+        if(StringUtils.isBlank(userRequestParams)){
+            userRequestParams = "{}";
+        }
+//        6.动态拼接网关URL
+        String url = gatewayHost+ oldInterfaceInfo.getUrl(); //网关地址 + 接口路径
+        String method = oldInterfaceInfo.getMethod(); //接口方法
+        log.info("开始进行接口在线测试, 目标URL: {}, 方法: {}", url, method);
+//        动态网络调用与容错处理
+        try {
+//            将字符串转化为Hutool认识的HTTP Method枚举
+            Method httpMethod = Method.valueOf(method.toUpperCase());
+//            动态发起请求，可以适配所有Method方法
+            try (HttpResponse response = cn.hutool.http.HttpRequest.of(url)
+                    .method(httpMethod) //动态塞入请求方法
+                    .addHeaders(AuthUtils.getHeaderMap(userRequestParams, accessKey, secretKey))//塞入鉴权信息
+                    .body(userRequestParams) //塞入用户请求参数
+                    .execute()) {//发起请求
+//                只要走出了上面的括号，网络流就会自动安全关闭
+                String result = response.body();
+                int status = response.getStatus();
+                log.info("接口在线测试完毕，响应状态码：{}", status);
+//                将网关返回的真实内容透传给前端
+                return ResultUtils.success(result);
+                }
+            } catch (IllegalArgumentException e) {
+                log.error("不支持的HTTP方法：{}", method, e);
+                return ResultUtils.error(ErrorCode.PARAMS_ERROR, "不支持的HTTP方法：" + method);
+            } catch (Exception e) {
+                log.error("接口在线测试网络异常", e);
+                return ResultUtils.error(ErrorCode.SYSTEM_ERROR, "接口调用失败，错误信息：" + e.getMessage());
+            }
+
+    }
+```
+
+## 添加发布、下线接口功能
+
+管理员新添加的接口默认为下线功能，所以需要添加一个发布和下线接口的功能，便于接口信息的管理，实现如下：
+
+在Common模块的`enums`包下添加接口状态信息枚举类：
+
+```java
+/**
+ * 接口信息状态枚举类
+ */
+@Getter
+public enum InterfaceInfoStatus {
+
+    OFFLINE(0,"关闭"),
+    ONLINE(1,"上线");
+
+    private final int value;
+    private final String description;
+
+    InterfaceInfoStatus(int value, String description) {
+        this.value = value;
+        this.description = description;
+    }
+
+    /**
+     * 获取值列表
+     */
+    public static List<Integer> getValues() {
+//        流式API：将枚举值转换为流，映射为它们的整数值，并收集到一个列表中返回
+        return Arrays.stream(values()).map(item -> item.value).collect(Collectors.toList());
+    }
+
+}
+```
+
+不能在判断接口是否上线时单单的使用“0”或“1”，所以创建这个枚举类，使得代码更加规范。
+
+在`InterfaceInfoController.java`中实现下线接口：
+
+```java
+    /**
+     * 下线接口（Offline）
+     */
+    @PostMapping("/{id}/offline")
+    @Operation(summary = "下线接口")
+    @AuthCheck(mustRole = "admin")
+    @SuppressWarnings("Duplicates")
+    public BaseResponse<Boolean> offlineInterfaceInfo(@PathVariable("id") Long id){
+        if(id == null || id <= 0){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
+        }
+//        检验接口是否存在
+        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+        if(oldInterfaceInfo == null){
+            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
+        }
+//        更新接口状态为下线
+        InterfaceInfo interfaceInfo = new InterfaceInfo();
+        interfaceInfo.setId(id);
+        interfaceInfo.setStatus(InterfaceInfoStatus.OFFLINE.getValue());
+        boolean result = interfaceInfoService.updateById(interfaceInfo);
+
+        log.info("管理员成功下线接口，接口ID：{}", id);
+        return ResultUtils.success(result);
+    }
+```
+
+实现发布接口时，需要注意，在发布前需要先测试一遍，通过了才能上线，总不能发布一个不可用的接口吧，所以逻辑如下：
+
+```java
+    /**
+     * 发布接口（Online）
+     */
+    @PostMapping("/{id}/online")
+    @Operation(summary = "发布接口")
+    @AuthCheck(mustRole = "admin") //只有管理员才能发布接口
+    @SuppressWarnings("Duplicates")
+    public BaseResponse<Boolean> onlineInterfaceInfo(@PathVariable("id") Long id,HttpServletRequest request){
+        if(id == null || id <= 0){
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR);
+        }
+//        1.校验接口是否存在
+        InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+        if(oldInterfaceInfo == null){
+            return ResultUtils.error(ErrorCode.NOT_FOUND_ERROR,"接口不存在");
+        }
+
+//        2.动态获取当前管理员的AK/SK
+        User loginUser = userService.getLoginUser(request);
+        String accessKey = loginUser.getAccessKey();
+        String secretKey = loginUser.getSecretKey();
+
+//        动态拼接请求URL和方法
+        String url = gatewayHost + oldInterfaceInfo.getUrl();
+        String methodStr = oldInterfaceInfo.getMethod();
+
+//        尝试从数据库获取该接口的标准请求参数,如果没有，给个空JSON兜底防报错
+        String requestParams = StringUtils.isNotBlank(oldInterfaceInfo.getRequestParams()) ? oldInterfaceInfo.getRequestParams() : "{}";
+
+        log.info("开始进行接口连通性测试，目标URL：{}，请求方法：{}", url, methodStr);
+
+//        动态网络调用与容错处理
+        try{
+            Method httpMethod = Method.valueOf(methodStr.toUpperCase());
+
+            try(HttpResponse response = HttpRequest.of(url)
+                    .method(httpMethod)
+                    .addHeaders(AuthUtils.getHeaderMap(requestParams,accessKey,secretKey))
+                    .body(requestParams)
+                    .timeout(5000) //设置超时时间为5秒,防止接口无响应导致发布卡死
+                    .execute()){
+                int status = response.getStatus();
+                log.info("接口测试完毕，响应状态码：{}", status);
+
+//                只要网关没有返回404、500、502、503等系统致命错误，说明接口是通的
+                if(status >= 404 && status != 405){
+                    return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网关返回异常状态码: " + status);
+                }
+            }
+        } catch(IllegalArgumentException e){
+            log.error("不支持的HTTP方法：{}",methodStr,e);
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR,"不支持的HTTP方法："+ methodStr);
+        } catch(Exception e){
+            log.error("接口连通性测试网络异常",e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"接口连通性测试失败，网络异常: " + e.getMessage());
+        }
+//        5.测试通过，更新接口状态为上线
+        InterfaceInfo interfaceInfo = new InterfaceInfo();
+        interfaceInfo.setId(id);
+        interfaceInfo.setStatus(InterfaceInfoStatus.ONLINE.getValue());
+        boolean result = interfaceInfoService.updateById(interfaceInfo);
+        return ResultUtils.success(result);
+    }
+```
+
+## 添加获取用户登录信息的接口
+
+因为在前端中，如果用户不小心刷新了浏览器，那么登录信息就会清空，所以添加下面这个接口，保证信息不会丢失：
+
+```java
+    /**
+     * 获取当前登录用户信息
+     */
+    @GetMapping("/current")
+    @Operation(summary="获取当前登录用户信息")
+    public BaseResponse<LoginUserVO> getLoginUser(HttpServletRequest request){
+        User user = userService.getLoginUser(request);
+
+        LoginUserVO loginUserVO = new LoginUserVO();
+        BeanUtils.copyProperties(user,loginUserVO);
+
+        return ResultUtils.success(loginUserVO);
+    }
+```
+
+到现在一些明显的遗留的问题都已经差不多解决了，下一期主要讲前端页面的展示，以及联调测试。
+
+从下面开始前端部分由AI归档总结：
+
+1. - # 🚀 API 开放平台：Admin 管理端前端架构文档
+
+     ## 1. 项目概览与技术栈
+
+     本项目为 API 开放平台的管理员后台（B端控制台），基于开源企业级中后台框架 Geeker-Admin 进行深度二次开发，剥离冗余模块，打造高内聚的接口资产管理与监控平台。
+
+     - **核心框架：** Vue 3.x (Composition API) + TypeScript + Vite
+     - **UI 组件库：** Element Plus
+     - **状态管理与路由：** Pinia + Vue Router
+     - **网络请求：** Axios (深度定制拦截器)
+     - **数据可视化：** ECharts 5
+     - **工程化规范：** ESLint + Prettier (解决 `vue/html-closing-bracket-newline` 冲突)
+
+     ------
+
+     ## 2. 核心功能与技术实现细节
+
+     ### 2.1 全局鉴权与网络层改造
+
+     作为前后端分离的桥梁，前端完成了极度严谨的网络层对齐工作：
+
+     - **Token 注入对齐：** 废弃模板默认的 `x-access-token`，在 Axios 的 `request` 拦截器中动态读取 Pinia 中的 Token，并统一携带在 `Authorization` 请求头中。
+     - **业务状态码解耦：** 重写 `ResultEnum`，将 HTTP 200 与后端的业务成功码（`Code: 0`）对齐，实现全局的鉴权失败（401/未登录）拦截与自动登出。
+     - **TS 类型安全：** 针对动态 API 响应，采用断言（`as any`）与接口聚合，解决强类型校验带来的开发阻力，提升联调效率。
+
+     ### 2.2 核心业务大盘：首页数据监控 (Dashboard)
+
+     摒弃静态欢迎页，采用 ECharts 实现高度贴合大厂运维视角的监控看板：
+
+     - **核心指标卡片：** 采用 4 列 `el-col` 响应式布局，动态绑定 `/interfaceInfo/statistics` 接口，展示“接口总数”、“已上线”、“已下线”等实时状态，辅以 `v-loading` 提升加载体验。
+     - **TOP 5 调用排行图表：**
+       - 引入 `ECharts` 柱状图（Bar），配合蓝灰线性渐变（`LinearGradient`）实现科技感渲染。
+       - **异步渲染机制：** 使用 `onMounted` 发起 `/top/invoke` 请求，在数据 `resolve` 后动态组装 `xAxis` 与 `series` 数据并初始化图表。
+       - **防内存泄漏：** 严格监听 `window.resize`，并在 `onBeforeUnmount` 生命周期中执行 `myChart.dispose()` 与事件解绑，防止 SPA 架构下的内存溢出。
+
+     ### 2.3 接口资产管理 (CRUD 极致重构)
+
+     - **ProTable 深度解耦：** 将传统的 `Pagination` 和 `Table` 逻辑交由 `ProTable` 底层接管，通过传入 `request-api` 动态获取 MyBatis-Plus 的分页数据，并利用 `dataCallback` 实现数据脱壳。
+     - **TSX 动态着色渲染：** 使用 Vue3 JSX/TSX 语法改造 `columns`，针对 HTTP Method（GET/POST/PUT/DELETE）与上线状态（0/1）渲染高对比度的 `el-tag` 标签。
+     - **抽屉组件复用与双击交互：** * 封装 `InterfaceDrawer.vue`，通过 `acceptParams` 模式配合深拷贝（`{...row}`），使用单个组件完美兼容“新增表单”与“编辑表单”。
+       - 优化表格交互空间，绑定 `@row-dblclick` 实现双击表格行直接弹窗查看，精简操作列。
+       - 封装“发布 / 下线 / 删除”的高危操作二次确认弹窗（`ElMessageBox.confirm`），保障资产安全。
+
+     ### 2.4 核心杀手级功能：在线动态沙箱 (API Debugger)
+
+     为了让管理员在发布接口前进行闭环验证，实现了极其硬核的在线测试模块：
+
+     - **无缝测试抽屉：** 封装 `InvokeDrawer.vue`，自动带入接口 URL 与默认参数，提供 JSON 格式的请求参数输入框。
+     - **参数压缩与异常防护：** 配合后端 Hutool 的 `JSONUtil` 压缩机制，前端只需输入纯净的业务 JSON，彻底规避了底层 HTTP 协议因 Header 包含换行符导致 `Illegal character` 崩溃的致命 Bug。
+     - **智能响应渲染：** 动态判断后端网关返回的数据类型，针对字符串与 JSON Object 采用不同的反序列化策略，防止页面渲染出现“套娃式”的双重引号。
